@@ -48,10 +48,20 @@ Fixed two real `pow/verify.py` bugs (raw-bytes header → typed `IncompleteBlock
   prover), assemble `ZK_CERTIFICATE | HEADER | TX_COUNT | TXNS`, `submitblock`, gossip.
 - Measure prover wall-clock; confirm it is safely ≪ 194 s (else self-orphan risk).
 
-### M4 — Stratum front-end (`stratum/server.py`)  ⬜
-- Adapt `pearl_stratum_srv` (alphapool dialect) so SRBMiner connects unchanged.
-- Push `mining.notify {header, share_target}` on each new parent/sidechain tip; handle base64
-  `plain_proof` submits; route to verify -> sharechain -> (maybe) block submit.
+### M4 — Stratum front-end (`stratum/server.py`)  ✅
+- Serve a **dialect-tolerant** Pearlhash stratum server so the fleet connects unchanged. SRBMiner
+  speaks the LuckyPool/Herominers **object** dialect (the default); the server also tolerates the
+  alphapool **positional** handshake and mirrors whichever the client used.
+- Push `mining.notify` (header + 256-bit share `target`) on each new parent/sidechain tip; handle
+  base64 `plain_proof` submits; route to an injected handler (verify -> sharechain -> maybe block).
+
+**Status: ✅ implemented & unit-tested** (`stratum/server.py` + `stratum/protocol.py`; 10 tests in
+`tests/test_stratum.py`: object + positional end-to-end over real loopback sockets, stale / malformed
+/ handler-reject paths, the 547 KB submit-frame read-limit, unknown-method tolerance, job-registry
+eviction). Transport + protocol only; the daemon (M3) injects the submit handler and calls
+`update_job` on tip changes. ⚠️ The object-dialect choice is INFERRED (the fleet mines Herominers with
+0 rejects), not from a live SRBMiner capture — confirm with a `bridge/logproxy` capture before
+production; the tolerant design mitigates. See [`integration/stratum-dialect.md`](integration/stratum-dialect.md).
 
 ### M5 — P2P network (`p2p/node.py`)  ⬜
 - SHARE_ANNOUNCE + on-demand GET_PROOF/PROOF (keep large proofs off the broadcast path)
