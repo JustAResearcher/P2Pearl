@@ -4,7 +4,7 @@
 
 P2Pearl is to Pearl what [P2Pool](https://github.com/SChernykh/p2pool) is to Monero: a peer-to-peer mining pool with **no operator, no pool wallet, and a 0 % fee**. Miners mine a shared *sharechain*; when the pool finds a real Pearl block, its coinbase pays every recent contributor directly and proportionally, enforced by consensus — there is no one to take a cut, go rogue, or be shut down.
 
-> **Status: early scaffold (v0.0.4).** Implemented and unit-tested (67 tests): the consensus core (share format, feeless PPLNS split, difficulty + `target_to_bits`, and the **sidechain engine** — linkage validation, GHOST uncles, cumulative-difficulty chain selection, PPLNS walk, pruning), the **nbits-override share verifier** wrappers, the pearld node RPC client, the multi-output coinbase builder, and the **miner-facing stratum server** (dialect-tolerant), and the **daemon orchestrator** (`PoolNode`) that wires them into a node — per-miner jobs, submit -> verify -> sharechain -> gossip, and the block-found -> assemble -> submitblock path. Still stubbed: only the P2P gossip layer (M5). See [`ROADMAP.md`](ROADMAP.md) and the full design in [`docs/blueprint.md`](docs/blueprint.md).
+> **Status: early scaffold (v0.0.5).** Implemented and unit-tested (73 tests): the consensus core (share format, feeless PPLNS split, difficulty + `target_to_bits`, and the **sidechain engine** — linkage validation, GHOST uncles, cumulative-difficulty chain selection, PPLNS walk, pruning), the **nbits-override share verifier** wrappers, the pearld node RPC client, the multi-output coinbase builder, and the **miner-facing stratum server** (dialect-tolerant), and the **daemon orchestrator** (`PoolNode`) that wires them into a node — per-miner jobs, submit -> verify -> sharechain -> gossip, and the block-found -> assemble -> submitblock path. and the **P2P gossip layer** (`p2p/node.py`: announce + on-demand proof fetch, relay, window sync). All five milestones M1-M5 are implemented and unit-tested; what remains is a live testnet bring-up (M6) and validating the production header/block-assembly adapters on a Linux build. See [`ROADMAP.md`](ROADMAP.md) and the full design in [`docs/blueprint.md`](docs/blueprint.md).
 
 ## Why this is feasible (and why Pearl is a clean target)
 
@@ -56,9 +56,9 @@ src/p2pearl/
   stratum/
     protocol.py          JSON-RPC framing + Pearlhash dialect parsing               [implemented]
     server.py            dialect-tolerant miner-facing stratum server               [implemented]
-  p2p/node.py            share/block gossip + peer manager                          [stub]
+  p2p/node.py            gossip: announce/on-demand proof fetch, relay, sync         [implemented]
   daemon.py              PoolNode orchestrator: per-miner jobs, verify, block       [implemented]
-tests/                   unit tests (67 passing)
+tests/                   unit tests (73 passing)
 integration/             cross-repo notes (py-pearl-mining binding, stratum dialect)
 ```
 

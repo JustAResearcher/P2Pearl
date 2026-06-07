@@ -75,10 +75,20 @@ eviction). Transport + protocol only; the daemon (M3) injects the submit handler
 0 rejects), not from a live SRBMiner capture — confirm with a `bridge/logproxy` capture before
 production; the tolerant design mitigates. See [`integration/stratum-dialect.md`](integration/stratum-dialect.md).
 
-### M5 — P2P network (`p2p/node.py`)  ⬜
+### M5 — P2P network (`p2p/node.py`)  ✅
 - SHARE_ANNOUNCE + on-demand GET_PROOF/PROOF (keep large proofs off the broadcast path)
 - Peer discovery/bootstrap, HELLO/peer-exchange, window sync on join
 - DoS/Sybil: pool-difficulty-only gossip, per-peer rate limits, ban invalid, bounded reorg
+
+**Status: ✅ implemented & unit-tested** (`p2p/node.py` `P2PNode`; 6 tests in `tests/test_p2p.py`
+over real loopback sockets: share propagation with on-demand proof fetch, invalid-proof rejection,
+3-node relay, window sync on join, block relay, dedupe). SHARE_ANNOUNCE -> GET_PROOF/PROOF keeps the
+60-370 KB proofs off the broadcast path; window sync carries proofs inline (parents before children);
+dedupe + drop-unknown-parent + verify-before-relay + a flood cap. Deps injected — the daemon passes
+`P2PNode.broadcast_share`/`broadcast_block` as its hooks and `on_new_share` -> `stratum.refresh`.
+⚠️ The production `verify_incoming` must reconstruct an incoming share's header (the SAME
+deterministic-reconstruction work as the daemon's `make_header`, shared with M3's production
+adapters); it is tested here with a fake.
 
 ### M6 — Integration & testnet  ⬜
 - End-to-end on Pearl regtest/testnet with a small fleet; verify a found block pays the
