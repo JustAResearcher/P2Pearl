@@ -70,8 +70,11 @@ Runs today — no node, no GPU, no native build:
 
 ```bash
 pip install -e ".[dev]"
-PYTHONPATH=src python -m pytest -q     # 73 passing (pure stdlib + a faked pearl_mining)
+PYTHONPATH=src python -m pytest -q       # 73 passing (pure stdlib + a faked pearl_mining)
+python examples/local_demo.py            # watch the full pipeline run: 2 nodes, stratum, P2P gossip, PPLNS
 ```
+
+`examples/local_demo.py` boots two real pool nodes (stratum + P2P gossip as live services), drives simulated miners over the real stratum protocol, and shows shares flowing verify -> sidechain -> gossip across both nodes plus the feeless PPLNS payout — all with no node/GPU/native build.
 
 A live pool additionally needs (details in [issue #1](https://github.com/JustAResearcher/P2Pearl/issues/1)):
 

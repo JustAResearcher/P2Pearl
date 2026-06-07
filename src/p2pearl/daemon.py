@@ -314,11 +314,16 @@ def main(argv: list[str] | None = None) -> int:
         print("See ROADMAP.md (M3) and integration/.")
         return 1
     print(f"  parent node : {node._cfg.url if hasattr(node, '_cfg') else '?'}")
-    print("  starting poll loop (Ctrl-C to stop)")
+    print("  polling pearld for work (Ctrl-C to stop) ...")
     try:
         asyncio.run(pool.run(node))
     except KeyboardInterrupt:  # pragma: no cover
         return 0
+    except Exception as exc:  # pragma: no cover - needs a live pearld
+        print(f"\n  could not reach pearld at {node._cfg.url}: {exc}")
+        print("  P2Pearl needs a running Pearl node + a pearl_mining build to run live.")
+        print("  The test suite and examples/local_demo.py run with no node. See ROADMAP.md (M6).")
+        return 1
     return 0
 
 
