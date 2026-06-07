@@ -8,7 +8,7 @@ P2Pearl is to Pearl what [P2Pool](https://github.com/SChernykh/p2pool) is to Mon
 
 ## Run / Download
 
-A prebuilt single-file Windows executable, `p2pearl.exe`, is attached to the [GitHub release](https://github.com/JustAResearcher/P2Pearl/releases). No Python install needed — download it and run:
+A prebuilt single-file Windows executable, `p2pearl.exe`, is attached to the [GitHub release](https://github.com/JustAResearcher/P2Pearl/releases). No Python install needed — **double-click it to run the demo** (the window stays open until you press Enter), or run it from a terminal:
 
 ```bat
 p2pearl.exe --version       :: print the version
