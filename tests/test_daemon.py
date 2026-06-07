@@ -87,6 +87,16 @@ def test_build_job_none_without_template():
     assert node.build_job_for(ADDR_A) is None
 
 
+def test_build_production_node_wires_stratum():
+    # `p2pearl daemon` must actually serve miners: build_production_node should wire a
+    # StratumServer whose per-connection job source is build_job_for. (No pearld /
+    # pearl_mining needed to *construct* it; the lazy deps load only when mining.)
+    from p2pearl.daemon import build_production_node
+    pool, node = build_production_node()
+    assert pool.stratum is not None
+    assert pool.stratum._job_builder == pool.build_job_for
+
+
 def test_serialize_payouts_deterministic():
     from p2pearl.consensus.pplns import Payout
     a = serialize_payouts([Payout("addrA", 10), Payout("addrB", 20)])

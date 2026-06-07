@@ -284,12 +284,13 @@ def build_production_node(cfg: config.DaemonConfig | None = None, share_target: 
     hashrate (sidechain difficulty = pool_hashrate * share_time)."""
     from .chain.node_rpc import NodeRPC
     from .pow.verify import verify_block_solution, verify_share
+    from .stratum.server import StratumServer
 
     cfg = cfg or config.DaemonConfig()
     node = NodeRPC(cfg.node)
     sharechain = Sharechain()
     if share_target is None:
-        share_target = config.MAX_TARGET >> 24  # placeholder; calibrate to hashrate
+        share_target = config.MAX_TARGET >> 24  # placeholder; calibrate to pool hashrate
 
     async def submit_block(block_hex: str):
         return await asyncio.to_thread(node.submit_block, block_hex)
@@ -303,28 +304,49 @@ def build_production_node(cfg: config.DaemonConfig | None = None, share_target: 
         assemble_block=_production_assemble_block,
         submit_block=submit_block,
     )
+    # Miner-facing stratum: each connecting miner gets its OWN job (its own PPLNS
+    # coinbase). build_job_for is the per-connection job source; handle_submit grades
+    # the submitted share. ``serve`` runs the server alongside the GBT poll loop.
+    stratum = StratumServer(pool.handle_submit, host=cfg.stratum_host, port=cfg.stratum_port)
+    pool.stratum = stratum
+    stratum.set_job_builder(pool.build_job_for)
     return pool, node
 
 
-def main(argv: list[str] | None = None) -> int:
+async def _serve(pool: "PoolNode", node: Any) -> None:
+    """Run the miner-facing stratum server and the parent-chain poll loop together.
+
+    Primes the first template (fails fast + cleanly if pearld is unreachable), binds
+    the stratum so a connecting miner gets a job immediately, then serves until stopped.
+    """
+    gbt = await asyncio.to_thread(node.get_block_template)
+    pool.set_template(ParentTemplate.from_gbt(gbt))
+    await pool.stratum.start()
+    host, port = pool.stratum.host, pool.stratum.port
+    print(f"  stratum     : {host}:{port}  (point your miners here)", flush=True)
+    print(f"  e.g.  SRBMiner-MULTI --algorithm pearlhash --pool {host}:{port} --wallet <prl1...> --disable-cpu", flush=True)
+    print("  serving — Ctrl-C to stop", flush=True)
+    await asyncio.gather(pool.run(node), pool.stratum.serve_forever())
+
+
+def main(cfg: "config.DaemonConfig | None" = None, share_target: int | None = None) -> int:
     print(f"P2Pearl v{__version__} daemon")
     try:
-        pool, node = build_production_node()
+        pool, node = build_production_node(cfg, share_target)
     except Exception as exc:  # pragma: no cover - needs live deps
         print(f"could not wire production node: {exc}")
         print("A live node needs a running pearld + a Linux-built pearl_mining + bitcoinutils.")
-        print("See ROADMAP.md (M3) and integration/.")
+        print("See ROADMAP.md and integration/.")
         return 1
     print(f"  parent node : {node._cfg.url if hasattr(node, '_cfg') else '?'}")
-    print("  polling pearld for work (Ctrl-C to stop) ...")
     try:
-        asyncio.run(pool.run(node))
+        asyncio.run(_serve(pool, node))
     except KeyboardInterrupt:  # pragma: no cover
         return 0
     except Exception as exc:  # pragma: no cover - needs a live pearld
         print(f"\n  could not reach pearld at {node._cfg.url}: {exc}")
-        print("  P2Pearl needs a running Pearl node + a pearl_mining build to run live.")
-        print("  The test suite and examples/local_demo.py run with no node. See ROADMAP.md (M6).")
+        print("  P2Pearl needs a running Pearl node + a Linux-built pearl_mining to run live.")
+        print("  The test suite and 'p2pearl demo' run with no node. See ROADMAP.md (M6).")
         return 1
     return 0
 

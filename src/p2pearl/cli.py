@@ -34,7 +34,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", action="version", version=f"p2pearl {__version__}")
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("demo", help="run the local end-to-end demo")
-    sub.add_parser("daemon", help="run a live pool node")
+    dp = sub.add_parser("daemon", help="run a live pool node (serves a stratum port; needs pearld + pearl_mining)")
+    dp.add_argument("--rpc-url", help="pearld JSON-RPC URL (default http://127.0.0.1:44107)")
+    dp.add_argument("--rpc-user", help="pearld RPC user (or env P2PEARL_RPC_USER; default 'user')")
+    dp.add_argument("--rpc-pass", help="pearld RPC password (or env P2PEARL_RPC_PASS; default 'pass')")
+    dp.add_argument("--stratum-host", default="0.0.0.0", help="stratum bind host (default 0.0.0.0)")
+    dp.add_argument("--stratum-port", type=int, default=3360, help="stratum port (default 3360)")
+    dp.add_argument("--share-target", help="sidechain share target as int/hex (default: built-in placeholder)")
 
     args = parser.parse_args(argv)
     standalone = _double_clicked()
@@ -47,8 +53,19 @@ def main(argv: list[str] | None = None) -> int:
             asyncio.run(demo.main())
             return 0
         if args.command == "daemon":
+            import os
+
+            from . import config as cfgmod
             from . import daemon
-            return daemon.main()
+            node_cfg = cfgmod.NodeRPCConfig(
+                url=args.rpc_url or cfgmod.PARENT_RPC_DEFAULT_URL,
+                user=args.rpc_user or os.environ.get("P2PEARL_RPC_USER", "user"),
+                password=args.rpc_pass or os.environ.get("P2PEARL_RPC_PASS", "pass"),
+            )
+            dcfg = cfgmod.DaemonConfig(
+                node=node_cfg, stratum_host=args.stratum_host, stratum_port=args.stratum_port)
+            st = int(args.share_target, 0) if args.share_target else None
+            return daemon.main(cfg=dcfg, share_target=st)
         parser.print_help()
         return 0
     finally:

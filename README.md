@@ -18,6 +18,21 @@ p2pearl.exe daemon          :: wire + run a live pool node (needs pearld + pearl
 
 `p2pearl.exe demo` boots two gossiping pool nodes and simulated miners and prints a share flowing verify -> sidechain -> PPLNS -> P2P gossip across both nodes — the same demo as `examples/local_demo.py`. From a source checkout the same CLI is available as `python -m p2pearl` (or `p2pearl` after `pip install -e .`).
 
+### Run a pool node (operators, Linux)
+
+`p2pearl daemon` connects to your local `pearld`, serves a stratum port your GPU miners point at, and — when it finds a Pearl block — pays the PPLNS window directly in the coinbase (no operator wallet, no fee). It needs a running `pearld` and the native `pearl_mining` build (see the M6 notes in [issue #1](https://github.com/JustAResearcher/P2Pearl/issues/1)):
+
+```bash
+pip install -e .
+p2pearl daemon --rpc-url http://127.0.0.1:44107 --rpc-user <u> --rpc-pass <p>
+# then point miners at it (same as any Pearlhash pool):
+SRBMiner-MULTI --algorithm pearlhash --pool <node-ip>:3360 --wallet <prl1...> --disable-cpu
+```
+
+`p2pearl daemon --help` lists the flags (`--stratum-port`, `--share-target`, RPC creds; creds also read from `P2PEARL_RPC_USER` / `P2PEARL_RPC_PASS`). Validated on regtest: a real SRBMiner GPU mines into `p2pearl daemon` and the blocks pearld accepts pay the miner's PPLNS share with zero operator outputs.
+
+> **Decentralization status:** today each node runs **standalone** (its blocks pay its own connected miners' PPLNS window). The cross-operator **P2P gossip** that fuses many nodes into one shared, trustless pool is the next milestone — it needs trustless share verification (`verify_incoming`), which in turn needs the share to carry enough to deterministically reconstruct each other's headers. Tracked in [issue #1](https://github.com/JustAResearcher/P2Pearl/issues/1).
+
 ## Why this is feasible (and why Pearl is a clean target)
 
 Pearl is a **btcd/Bitcoin fork** (UTXO chain, `getblocktemplate`, real Bitcoin coinbase, transaction merkle root, `nbits` compact targets) with the Pearlhash proof-of-useful-work bolted on as a **succinct, CPU-verifiable ZK certificate**. That combination is almost ideal for a P2Pool port:
