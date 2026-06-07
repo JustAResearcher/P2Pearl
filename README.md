@@ -62,6 +62,23 @@ tests/                   unit tests (73 passing)
 integration/             cross-repo notes (py-pearl-mining binding, stratum dialect)
 ```
 
+## Status & how to test
+
+All five milestones (M1-M5) are implemented and unit-tested (73 tests): the sidechain engine, feeless PPLNS, share verification, the dialect-tolerant stratum server, the daemon orchestrator (per-miner jobs), and the P2P gossip layer are wired together and orchestration-tested end-to-end with fakes. **What remains is live bring-up against a real Pearl node + GPU miners**, tracked in [issue #1 (M6)](https://github.com/JustAResearcher/P2Pearl/issues/1). **Testers and contributors with a Pearl node and/or a GPU rig are very welcome.**
+
+Runs today — no node, no GPU, no native build:
+
+```bash
+pip install -e ".[dev]"
+PYTHONPATH=src python -m pytest -q     # 73 passing (pure stdlib + a faked pearl_mining)
+```
+
+A live pool additionally needs (details in [issue #1](https://github.com/JustAResearcher/P2Pearl/issues/1)):
+
+1. The `verify_plain_proof_with_nbits` binding built into `pearl_mining` — an additive Pearl-repo change documented in [`integration/py-pearl-mining-nbits-override.md`](integration/py-pearl-mining-nbits-override.md) (`maturin develop` on Linux).
+2. Validation of the coinbase/header **byte orientation** against a Pearl regtest/testnet — the production `make_header`/`assemble_block` adapters and the P2P `verify_incoming` are the only pieces tested with fakes.
+3. `share_target` calibration to live pool hashrate + sidechain difficulty retarget.
+
 ## Development
 
 ```bash
