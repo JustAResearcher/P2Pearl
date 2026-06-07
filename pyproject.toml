@@ -1,6 +1,6 @@
 [project]
 name = "p2pearl"
-version = "0.0.5"
+version = "0.0.6"
 description = "P2Pearl — a decentralized, zero-fee P2Pool-style mining pool for Pearl (Pearlhash PoUW)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -21,7 +21,7 @@ dependencies = [
 dev = ["pytest>=7"]
 
 [project.scripts]
-p2pearl = "p2pearl.daemon:main"
+p2pearl = "p2pearl.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]

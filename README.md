@@ -4,7 +4,19 @@
 
 P2Pearl is to Pearl what [P2Pool](https://github.com/SChernykh/p2pool) is to Monero: a peer-to-peer mining pool with **no operator, no pool wallet, and a 0 % fee**. Miners mine a shared *sharechain*; when the pool finds a real Pearl block, its coinbase pays every recent contributor directly and proportionally, enforced by consensus — there is no one to take a cut, go rogue, or be shut down.
 
-> **Status: early scaffold (v0.0.5).** Implemented and unit-tested (73 tests): the consensus core (share format, feeless PPLNS split, difficulty + `target_to_bits`, and the **sidechain engine** — linkage validation, GHOST uncles, cumulative-difficulty chain selection, PPLNS walk, pruning), the **nbits-override share verifier** wrappers, the pearld node RPC client, the multi-output coinbase builder, and the **miner-facing stratum server** (dialect-tolerant), and the **daemon orchestrator** (`PoolNode`) that wires them into a node — per-miner jobs, submit -> verify -> sharechain -> gossip, and the block-found -> assemble -> submitblock path. and the **P2P gossip layer** (`p2p/node.py`: announce + on-demand proof fetch, relay, window sync). All five milestones M1-M5 are implemented and unit-tested; what remains is a live testnet bring-up (M6) and validating the production header/block-assembly adapters on a Linux build. See [`ROADMAP.md`](ROADMAP.md) and the full design in [`docs/blueprint.md`](docs/blueprint.md).
+> **Status: early scaffold (v0.0.6).** Implemented and unit-tested (73 tests): the consensus core (share format, feeless PPLNS split, difficulty + `target_to_bits`, and the **sidechain engine** — linkage validation, GHOST uncles, cumulative-difficulty chain selection, PPLNS walk, pruning), the **nbits-override share verifier** wrappers, the pearld node RPC client, the multi-output coinbase builder, and the **miner-facing stratum server** (dialect-tolerant), and the **daemon orchestrator** (`PoolNode`) that wires them into a node — per-miner jobs, submit -> verify -> sharechain -> gossip, and the block-found -> assemble -> submitblock path. and the **P2P gossip layer** (`p2p/node.py`: announce + on-demand proof fetch, relay, window sync). All five milestones M1-M5 are implemented and unit-tested, and the **M6 live loop is validated end-to-end**: against a Pearl `regtest` node, P2Pearl mined real blocks that `pearld` accepted, with a feeless PPLNS coinbase (0 operator outputs) confirmed on-chain. What remains is hardening for a public testnet (P2P `verify_incoming`, share-target calibration). See [`ROADMAP.md`](ROADMAP.md) and the full design in [`docs/blueprint.md`](docs/blueprint.md).
+
+## Run / Download
+
+A prebuilt single-file Windows executable, `p2pearl.exe`, is attached to the [GitHub release](https://github.com/JustAResearcher/P2Pearl/releases). No Python install needed — download it and run:
+
+```bat
+p2pearl.exe --version       :: print the version
+p2pearl.exe demo            :: run the local end-to-end demo (no node/GPU/native build)
+p2pearl.exe daemon          :: wire + run a live pool node (needs pearld + pearl_mining + bitcoinutils)
+```
+
+`p2pearl.exe demo` boots two gossiping pool nodes and simulated miners and prints a share flowing verify -> sidechain -> PPLNS -> P2P gossip across both nodes — the same demo as `examples/local_demo.py`. From a source checkout the same CLI is available as `python -m p2pearl` (or `p2pearl` after `pip install -e .`).
 
 ## Why this is feasible (and why Pearl is a clean target)
 
