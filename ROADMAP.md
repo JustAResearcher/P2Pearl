@@ -13,13 +13,19 @@ Status legend: ✅ implemented & unit-tested · 🟡 partial/untested · ⬜ not
 
 ## Milestones
 
-### M1 — Sidechain engine (`consensus/sharechain.py`)  ⬜
+### M1 — Sidechain engine (`consensus/sharechain.py`)  ✅
 The core net-new work; mirrors Monero P2Pool `src/side_chain.cpp`.
 - Share linkage validation (parent known, parent anchor not stale, timestamps sane)
 - GHOST uncles (depth ≤ `UNCLE_BLOCK_DEPTH`, penalty `UNCLE_PENALTY_PERCENT`)
 - PPLNS weight walk over the window (`pplns_weights`)
 - Cumulative-difficulty chain selection + bounded reorg
 - Persistence (store only the PPLNS window of shares + proofs; prune older)
+
+**Status: ✅ implemented & unit-tested** (18 tests in `tests/test_sharechain.py`: genesis,
+linear extension, cumulative difficulty, reorg-by-weight, full GHOST uncle rules, PPLNS
+window cap, pruning, and every rejection path). Deferred to integration: pin a hardcoded
+genesis id; explicit max-reorg-depth check (currently bounded by pruning); on-disk
+persistence (in-memory today).
 
 ### M2 — `pearl_mining` bindings  ⬜
 - Expose an **nbits-override** plain-proof verifier (`check_jackpot_difficulty_with_nbits` /

@@ -4,7 +4,7 @@
 
 P2Pearl is to Pearl what [P2Pool](https://github.com/SChernykh/p2pool) is to Monero: a peer‑to‑peer mining pool with **no operator, no pool wallet, and a 0 % fee**. Miners mine a shared *sharechain*; when the pool finds a real Pearl block, its coinbase pays every recent contributor directly and proportionally, enforced by consensus — there is no one to take a cut, go rogue, or be shut down.
 
-> **Status: early scaffold (v0.0.1).** The consensus math (share format, PPLNS split, difficulty), the proof‑verification wrappers, the node RPC client, and the multi‑output coinbase builder are implemented and unit‑tested. The sharechain engine, the P2P gossip layer, and the stratum front‑end are stubbed with defined interfaces. See [`ROADMAP.md`](ROADMAP.md) and the full design in [`docs/blueprint.md`](docs/blueprint.md).
+> **Status: early scaffold (v0.0.2).** The consensus math (share format, PPLNS split, difficulty), the sidechain engine, the proof‑verification wrappers, the node RPC client, and the multi‑output coinbase builder are implemented and unit‑tested. The P2P gossip layer, and the stratum front‑end are stubbed with defined interfaces. See [`ROADMAP.md`](ROADMAP.md) and the full design in [`docs/blueprint.md`](docs/blueprint.md).
 
 ## Why this is feasible (and why Pearl is a clean target)
 
