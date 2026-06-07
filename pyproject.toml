@@ -1,0 +1,35 @@
+[project]
+name = "p2pearl"
+version = "0.0.1"
+description = "P2Pearl — a decentralized, zero-fee P2Pool-style mining pool for Pearl (Pearlhash PoUW)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "P2Pearl contributors" }]
+
+# Core consensus modules (config, share, pplns, difficulty) use only the stdlib.
+# The dependencies below are needed for integration (coinbase building + proof
+# verification + node RPC is stdlib-only):
+dependencies = [
+    # "bitcoin-utils>=0.7",   # imports as `bitcoinutils`; used by chain/coinbase.py
+    # "blake3>=0.4",          # used when computing Pearl-side commitments
+    # `pearl_mining` (PyO3) is installed from the Pearl repo's py-pearl-mining via maturin;
+    # it is not on PyPI. pow/verify.py imports it lazily.
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+p2pearl = "p2pearl.daemon:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
