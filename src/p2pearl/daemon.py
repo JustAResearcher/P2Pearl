@@ -256,11 +256,13 @@ def _production_assemble_block(header_ctx: dict, plain_proof_b64: str) -> str:
     zk_proof = pearl_mining.generate_proof(incomplete, proof)
     pearl_header = PearlHeader(incomplete)
     zk_cert = ZKCertificate.from_pearl_header(pearl_header, zk_proof)
-    txns = [header_ctx["coinbase_tx"]] + [
-        __import__("bitcoinutils.transactions", fromlist=["Transaction"]).Transaction.from_raw(t["data"])
-        for t in header_ctx["transactions"]
+    # PearlBlock serializes raw_txns as bytes (zk_cert | header | count | txs). The
+    # coinbase is serialized WITH its witness; template txs arrive as raw GBT hex.
+    coinbase_tx = header_ctx["coinbase_tx"]
+    raw_txns = [coinbase_tx.to_bytes(getattr(coinbase_tx, "has_segwit", False))] + [
+        bytes.fromhex(t["data"]) for t in header_ctx["transactions"]
     ]
-    return PearlBlock(pearl_header, txns, zk_cert).serialize().hex()
+    return PearlBlock(pearl_header, raw_txns, zk_cert).serialize().hex()
 
 
 def _tx_merkle_root(txids_hex: list[str]) -> bytes:
