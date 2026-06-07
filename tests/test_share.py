@@ -20,7 +20,6 @@ def _sample(**over):
         block_nbits=0x1E01FFFF,
         miner_address="prl1pexampleexampleexampleexampleexampleexampleexampleexa",
         payout_set_hash=b"\x33" * 32,
-        pow_hash=b"\x44" * 32,
         uncle_ids=[b"\x55" * 32, b"\x66" * 32],
     )
     base.update(over)
@@ -51,6 +50,8 @@ def test_id_changes_with_any_field():
     assert _sample(timestamp=1_777_000_001).share_id() != base_id
     assert _sample(miner_address="prl1pother").share_id() != base_id
     assert _sample(uncle_ids=[]).share_id() != base_id
+    # pow_hash is non-committed evidence: it must NOT change the committed id.
+    assert _sample(pow_hash=b"\x99" * 32).share_id() == base_id
 
 
 def test_difficulty_inverse_of_target():

@@ -1,6 +1,6 @@
 """Proof verification wrappers over the Pearl ``pearl_mining`` (PyO3) module.
 
-Two responsibilities:
+Responsibilities:
   1. The nested-target check, ``meets_target`` - used for BOTH the share target
      and the parent block target (the same ``hash_jackpot`` is graded against two
      thresholds). This is pure Python and always available.
@@ -75,4 +75,19 @@ def verify_share(incomplete_header_bytes: bytes, plain_proof_b64: str, share_nbi
     # Returns (ok, message); a rejected proof is (False, msg). Unpack element [0]
     # so a falsy result is not masked by tuple-truthiness: bool((False, "...")) is True.
     ok, _msg = verify_with_nbits(header, proof, share_nbits)
+    return bool(ok)
+
+
+def verify_block_solution(incomplete_header_bytes: bytes, plain_proof_b64: str) -> bool:
+    """Verify a plain proof at the BLOCK target (the header's own ``nbits``).
+
+    Used only on the block-found path: when a share also clears the parent block
+    target, the daemon confirms it with the UNMODIFIED ``verify_plain_proof`` (which
+    grades at the header's block nbits) before assembling and submitting the block.
+    NEVER use ``verify_share`` (the nbits override) for block acceptance.
+    """
+    pm = _pearl_mining()
+    proof = pm.PlainProof.from_base64(plain_proof_b64)
+    header = pm.IncompleteBlockHeader.from_bytes(incomplete_header_bytes)
+    ok, _msg = pm.verify_plain_proof(header, proof)
     return bool(ok)

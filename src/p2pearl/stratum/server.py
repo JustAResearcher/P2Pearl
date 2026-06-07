@@ -66,6 +66,7 @@ class StratumJob:
     incomplete_header_hex: str   # 76-byte incomplete block header, hex (152 chars)
     share_target: int            # 256-bit share threshold
     height: int
+    context: object | None = None  # opaque payload the job builder attaches (the candidate ShareBlock)
 
     def _header(self) -> bytes:
         return bytes.fromhex(self.incomplete_header_hex)
@@ -120,10 +121,11 @@ class JobRegistry:
         self._seq = 0
         self._max = max_size
 
-    def mint(self, incomplete_header_hex: str, share_target: int, height: int) -> StratumJob:
+    def mint(self, incomplete_header_hex: str, share_target: int, height: int,
+             context: object | None = None) -> StratumJob:
         self._seq = (self._seq + 1) & 0xFFFF
         job_id = f"{height & 0xFFFFFFFF:08x}-{self._seq:04x}"
-        job = StratumJob(job_id, incomplete_header_hex, share_target, height)
+        job = StratumJob(job_id, incomplete_header_hex, share_target, height, context)
         self._jobs[job_id] = job
         while len(self._jobs) > self._max:
             self._jobs.popitem(last=False)
@@ -244,7 +246,7 @@ class _Connection:
     async def push_job(self, clean: bool) -> None:
         if not self.ready:
             return
-        job = self.server.registry.latest()
+        job = self.server._mint_job_for(self)
         if job is None:
             return
         await self.send(P.encode_notification("mining.notify", job.notify_params(self.dialect, clean)))
@@ -273,6 +275,7 @@ class StratumServer:
         self._conns: set[_Connection] = set()
         self._server: asyncio.AbstractServer | None = None
         self._conn_seq = 0
+        self._job_builder: Callable[[str | None], tuple | None] | None = None
 
     async def start(self) -> None:
         self._server = await asyncio.start_server(
@@ -295,8 +298,28 @@ class StratumServer:
             self._server.close()
             await self._server.wait_closed()
 
+    def set_job_builder(self, builder: "Callable[[str | None], tuple | None]") -> None:
+        """Register a per-connection job source for P2Pool-style per-miner coinbases.
+
+        ``builder(worker_address) -> (incomplete_header_hex, share_target, height, context)``
+        or ``None``. With a builder set, each miner gets its OWN job — its coinbase pays the
+        PPLNS window and commits a share crediting that miner — so call ``refresh()`` on a tip
+        change rather than ``update_job()``.
+        """
+        self._job_builder = builder
+
+    def _mint_job_for(self, conn: "_Connection") -> "StratumJob | None":
+        if self._job_builder is not None:
+            spec = self._job_builder(conn.worker_address)
+            return None if spec is None else self.registry.mint(*spec)
+        return self.registry.latest()
+
+    async def refresh(self) -> None:
+        """Re-mint and broadcast a fresh per-connection job to every ready miner (tip change)."""
+        await self._broadcast(clean=True)
+
     async def update_job(self, incomplete_header_hex: str, share_target: int, height: int) -> StratumJob:
-        """Mint a job from the current tip and broadcast it to all ready miners."""
+        """Mint a single global job and broadcast it (the simple / no-job-builder path)."""
         job = self.registry.mint(incomplete_header_hex, share_target, height)
         await self._broadcast(clean=True)
         return job

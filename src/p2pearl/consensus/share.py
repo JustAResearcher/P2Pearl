@@ -69,8 +69,11 @@ class ShareBlock:
     block_nbits: int                 # u32  parent compact target carried in the header
     miner_address: str               # bech32m P2TR payout address of this share's finder
     payout_set_hash: bytes           # 32   binds the deterministic PPLNS coinbase output set
-    pow_hash: bytes                  # 32   hash_jackpot (little-endian) of the winning solution
     uncle_ids: list[bytes] = field(default_factory=list)  # each 32; GHOST uncles referenced by this share
+    # NON-committed PoW evidence: set AFTER mining; excluded from serialize()/share_id so the
+    # parent coinbase OP_RETURN can commit to share_id BEFORE the solution exists. Carried
+    # alongside the share on the wire for relay; recomputable from the proof.
+    pow_hash: bytes = b"\x00" * 32   # 32   hash_jackpot (little-endian) of the winning solution
 
     def __post_init__(self) -> None:
         for name in ("prev_share_id", "parent_prev_block", "payout_set_hash", "pow_hash"):
@@ -96,7 +99,6 @@ class ShareBlock:
         addr = self.miner_address.encode("ascii")
         out += _write_varint(len(addr)) + addr
         out += self.payout_set_hash
-        out += self.pow_hash
         out += _write_varint(len(self.uncle_ids))
         for u in self.uncle_ids:
             out += u
@@ -116,7 +118,6 @@ class ShareBlock:
         addr_len, off = _read_varint(data, off)
         miner_address = data[off:off + addr_len].decode("ascii"); off += addr_len
         payout_set_hash = data[off:off + 32]; off += 32
-        pow_hash = data[off:off + 32]; off += 32
         n_uncles, off = _read_varint(data, off)
         uncle_ids = []
         for _ in range(n_uncles):
@@ -132,7 +133,6 @@ class ShareBlock:
             block_nbits=block_nbits,
             miner_address=miner_address,
             payout_set_hash=payout_set_hash,
-            pow_hash=pow_hash,
             uncle_ids=uncle_ids,
         )
 

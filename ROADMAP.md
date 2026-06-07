@@ -43,10 +43,22 @@ Fixed two real `pow/verify.py` bugs (raw-bytes header → typed `IncompleteBlock
 `maturin develop` on a Linux rig; the block-acceptance path (M3) must use the unmodified
 `verify_plain_proof`, never the override.
 
-### M3 — Block assembly & submission  ⬜
+### M3 — Block assembly & submission + daemon wiring  ✅
 - When a share clears the parent block target: run `generate_proof` (the recursive plonky2
   prover), assemble `ZK_CERTIFICATE | HEADER | TX_COUNT | TXNS`, `submitblock`, gossip.
 - Measure prover wall-clock; confirm it is safely ≪ 194 s (else self-orphan risk).
+
+**Status: ✅ implemented & unit-tested** (`daemon.py` `PoolNode` orchestrator + `ParentTemplate`;
+`pow.verify.verify_block_solution`; 8 tests in `tests/test_daemon.py` incl. a full
+PoolNode <-> StratumServer <-> two-miner integration test). The daemon wires it together: per-miner
+job building (PPLNS coinbase + `OP_RETURN<candidate share id>`), submit -> `verify_share` ->
+`sharechain.add_share` -> gossip, and the block path -> `verify_block_solution` (the UNMODIFIED
+verifier) -> assemble -> `submitblock`. Also fixed a design bug integration surfaced: a share's
+committed id now EXCLUDES `pow_hash` (the coinbase must commit before the solution exists).
+⚠️ The production header/block-assembly adapters in `build_production_node` need bitcoinutils +
+pearl_mining + the Pearl gateway (Linux build) and byte-orientation validation on testnet; the
+orchestration itself is fully tested with fakes. Share-target calibration + sidechain difficulty
+retarget wiring remain.
 
 ### M4 — Stratum front-end (`stratum/server.py`)  ✅
 - Serve a **dialect-tolerant** Pearlhash stratum server so the fleet connects unchanged. SRBMiner

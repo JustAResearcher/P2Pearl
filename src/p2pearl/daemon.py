@@ -1,40 +1,324 @@
-"""P2Pearl daemon — wires the components into the mining loop.
+"""P2Pearl daemon — the orchestrator that wires the components into a mining node.
 
-Orchestration (target shape; the sidechain/P2P/stratum pieces are still stubs):
+``PoolNode`` connects: the parent-chain template (pearld GBT) + the sharechain +
+PPLNS + the coinbase builder + share/block verification + the stratum server +
+(optionally) the P2P layer. Dependencies are INJECTED, so the orchestration is
+unit-tested with fakes (no pearld / pearl_mining / bitcoinutils needed);
+``build_production_node`` wires the real implementations for a live deployment.
 
-    1. Poll pearld getblocktemplate for the current parent tip.
-    2. From the sidechain tip, compute PPLNS weights -> compute_pplns_payouts ->
-       coinbase outputs (PPLNS P2TR payouts + OP_RETURN <next share id>).
-    3. Build the incomplete header (parent nbits + coinbase merkle root) and push
-       it to miners via stratum with the sidechain share_target.
-    4. On a submitted share: verify (pow.verify), add to the sharechain, gossip.
-    5. If the share also clears the parent block target: generate the ZK proof,
-       assemble ZK_CERTIFICATE|HEADER|TXNS, submitblock, and gossip the block.
+Per-miner jobs: each share's coinbase pays the PPLNS window AND commits a share
+crediting the finder, so every miner needs its OWN job (its own coinbase -> its own
+merkle root -> its own header). The stratum server's ``set_job_builder`` hook calls
+``PoolNode.build_job_for(worker_address)`` per connection.
 
-This entrypoint currently validates config and reports status; it does not yet run
-the loop (see ROADMAP).
+Flow:
+  build_job_for(addr): sidechain tip -> PPLNS payouts -> coinbase(payouts +
+    OP_RETURN<candidate share id>) -> incomplete header -> (header, share_target).
+  handle_submit(sub): verify_share at the SHARE target -> sharechain.add_share ->
+    gossip; if it ALSO clears the BLOCK target (the UNMODIFIED verifier) -> assemble
+    + submitblock + gossip the block -> refresh every miner's job.
 """
 
 from __future__ import annotations
 
+import asyncio
+import struct
 import sys
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from typing import Any
 
 from . import __version__, config
+from .consensus.difficulty import target_to_bits
+from .consensus.pplns import Payout, compute_pplns_payouts
+from .consensus.share import ShareBlock, double_sha256
+from .consensus.sharechain import GENESIS_PREV, Sharechain
+from .stratum import protocol as P
+from .stratum.server import StratumServer, Submission, SubmitResult
+
+
+@dataclass
+class ParentTemplate:
+    """The fields of a pearld getblocktemplate response that P2Pearl needs."""
+
+    height: int
+    prev_block: bytes                  # 32 bytes (as returned by GBT previousblockhash)
+    bits: int                          # compact block nbits (u32)
+    curtime: int                       # unix seconds
+    coinbase_value: int                # subsidy + fees, in grains
+    version: int = 0x20000000
+    witness_commitment: str | None = None        # GBT default_witness_commitment (hex)
+    coinbaseaux_flags: str | None = None          # GBT coinbaseaux.flags (hex)
+    transactions: list = field(default_factory=list)  # raw template txs (opaque to the orchestrator)
+
+    @classmethod
+    def from_gbt(cls, gbt: dict) -> "ParentTemplate":
+        bits = gbt["bits"]
+        aux = gbt.get("coinbaseaux") or {}
+        return cls(
+            height=int(gbt["height"]),
+            prev_block=bytes.fromhex(gbt["previousblockhash"]),
+            bits=int(bits, 16) if isinstance(bits, str) else int(bits),
+            curtime=int(gbt["curtime"]),
+            coinbase_value=int(gbt["coinbasevalue"]),
+            version=int(gbt.get("version", 0x20000000)),
+            witness_commitment=gbt.get("default_witness_commitment"),
+            coinbaseaux_flags=aux.get("flags"),
+            transactions=list(gbt.get("transactions", [])),
+        )
+
+
+def serialize_payouts(payouts: list[Payout]) -> bytes:
+    """Deterministic encoding of the PPLNS output set, hashed into payout_set_hash."""
+    out = bytearray(struct.pack("<I", len(payouts)))
+    for p in payouts:
+        addr = p.address.encode("ascii")
+        out += struct.pack("<H", len(addr)) + addr + struct.pack("<Q", p.grains)
+    return bytes(out)
+
+
+# Injected adapter signatures.
+MakeHeader = Callable[["ParentTemplate", "list[Payout]", bytes], "tuple[str, Any]"]
+AssembleBlock = Callable[[Any, str], str]
+VerifyShare = Callable[[bytes, str, int], bool]
+VerifyBlock = Callable[[bytes, str], bool]
+SubmitBlock = Callable[[str], Awaitable[Any]]
+BroadcastShare = Callable[[ShareBlock, str], Awaitable[None]]
+BroadcastBlock = Callable[[str], Awaitable[None]]
+
+
+@dataclass
+class _JobContext:
+    candidate: ShareBlock
+    header_ctx: Any
+    payouts: list
+
+
+class PoolNode:
+    def __init__(
+        self,
+        *,
+        sharechain: Sharechain,
+        share_target: int,
+        make_header: MakeHeader,
+        verify_share: VerifyShare,
+        verify_block: VerifyBlock,
+        assemble_block: AssembleBlock,
+        submit_block: SubmitBlock,
+        stratum: StratumServer | None = None,
+        broadcast_share: BroadcastShare | None = None,
+        broadcast_block: BroadcastBlock | None = None,
+        min_payout_grains: int = config.MIN_PAYOUT_GRAINS,
+    ) -> None:
+        self.sharechain = sharechain
+        self.share_target = share_target
+        self._make_header = make_header
+        self._verify_share = verify_share
+        self._verify_block = verify_block
+        self._assemble_block = assemble_block
+        self._submit_block = submit_block
+        self.stratum = stratum
+        self._broadcast_share = broadcast_share
+        self._broadcast_block = broadcast_block
+        self._min_payout = min_payout_grains
+        self._template: ParentTemplate | None = None
+        if stratum is not None:
+            stratum.set_job_builder(self.build_job_for)
+
+    def set_template(self, template: ParentTemplate) -> None:
+        self._template = template
+
+    # --- job building (called per-connection by the stratum) ---------------- #
+    def build_job_for(self, worker_address: str | None):
+        """Build this miner's job: a candidate share + the header that commits it.
+
+        Returns ``(incomplete_header_hex, share_target, height, _JobContext)`` for the
+        stratum to mint, or ``None`` if there is no template / address yet.
+        """
+        template = self._template
+        if template is None or not worker_address:
+            return None
+
+        tip = self.sharechain.tip()
+        prev_share_id = tip.share_id() if tip is not None else GENESIS_PREV
+        s_height = (tip.sidechain_height + 1) if tip is not None else 0
+
+        weights = self.sharechain.pplns_weights()
+        payouts = compute_pplns_payouts(template.coinbase_value, weights, self._min_payout)
+        payout_set_hash = double_sha256(serialize_payouts(payouts))
+
+        candidate = ShareBlock(
+            version=config.SIDECHAIN_VERSION,
+            sidechain_height=s_height,
+            prev_share_id=prev_share_id,
+            parent_prev_block=template.prev_block,
+            parent_height=template.height,
+            timestamp=template.curtime,
+            share_target=self.share_target,
+            block_nbits=template.bits,
+            miner_address=worker_address,
+            payout_set_hash=payout_set_hash,
+        )
+        header_hex, header_ctx = self._make_header(template, payouts, candidate.share_id())
+        ctx = _JobContext(candidate=candidate, header_ctx=header_ctx, payouts=payouts)
+        return (header_hex, self.share_target, s_height, ctx)
+
+    # --- submit handling (the stratum submit_handler) ----------------------- #
+    async def handle_submit(self, submission: Submission) -> SubmitResult:
+        ctx = submission.job.context
+        if not isinstance(ctx, _JobContext):
+            return SubmitResult(False, P.INVALID_PARAMS_CODE, "job has no candidate share")
+        header_bytes = bytes.fromhex(submission.job.incomplete_header_hex)
+        share_nbits = target_to_bits(submission.job.share_target)
+
+        # 1. Cheap share-target verification (nbits override).
+        if not self._verify_share(header_bytes, submission.plain_proof_b64, share_nbits):
+            return SubmitResult(False, P.LOW_DIFF_CODE, "share does not meet target")
+
+        # 2. Record the share on the sidechain (PoW already verified above).
+        proof_bytes = submission.plain_proof_b64.encode("ascii")
+        added = self.sharechain.add_share(ctx.candidate, verified=True, proof=proof_bytes)
+        if not added.accepted:
+            return SubmitResult(False, P.STALE_SHARE_CODE, added.reason or "share rejected")
+
+        # 3. Gossip the share to peers.
+        if self._broadcast_share is not None:
+            await self._broadcast_share(ctx.candidate, submission.plain_proof_b64)
+
+        # 4. Block-found path: confirm at the BLOCK target with the UNMODIFIED verifier,
+        #    then assemble the full Pearl block, submit it, and gossip it.
+        if self._verify_block(header_bytes, submission.plain_proof_b64):
+            block_hex = self._assemble_block(ctx.header_ctx, submission.plain_proof_b64)
+            await self._submit_block(block_hex)
+            if self._broadcast_block is not None:
+                await self._broadcast_block(block_hex)
+
+        # 5. New sidechain tip -> rebuild every miner's job (new prev_share + PPLNS).
+        if self.stratum is not None:
+            await self.stratum.refresh()
+        return SubmitResult(True)
+
+    # --- production poll loop ---------------------------------------------- #
+    async def run(self, node: Any, poll_interval: float = 2.0) -> None:
+        """Poll ``node`` for new parent tips and refresh jobs. Tests drive
+        ``set_template`` / ``handle_submit`` directly instead of running this."""
+        last_prev: bytes | None = None
+        while True:
+            result = node.get_block_template()
+            gbt = await result if asyncio.iscoroutine(result) else result
+            template = ParentTemplate.from_gbt(gbt)
+            if template.prev_block != last_prev:
+                last_prev = template.prev_block
+                self.set_template(template)
+                if self.stratum is not None:
+                    await self.stratum.refresh()
+            await asyncio.sleep(poll_interval)
+
+
+# ---------------------------------------------------------------------------- #
+# Production wiring. These adapters need bitcoinutils + pearl_mining + the Pearl
+# gateway on the path and a Linux-built py-pearl-mining; they are NOT exercised by
+# the unit tests. Header/coinbase byte orientation MUST be validated on testnet
+# (see integration/stratum-dialect.md) before mainnet use.
+# ---------------------------------------------------------------------------- #
+
+def _production_make_header(template: ParentTemplate, payouts: list[Payout], share_id: bytes):
+    """Build the coinbase (PPLNS P2TR outputs + OP_RETURN<share_id>), the tx merkle
+    root, and the 76-byte incomplete header. REQUIRES bitcoinutils + pearl_mining."""
+    from .chain.coinbase import assemble_coinbase_tx, build_coinbase_outputs
+
+    import pearl_mining  # type: ignore
+
+    outputs = build_coinbase_outputs(payouts, share_id, template.coinbase_value)
+    coinbase_tx = assemble_coinbase_tx(
+        outputs, template.height,
+        coinbase_aux={"flags": template.coinbaseaux_flags} if template.coinbaseaux_flags else None,
+        default_witness_commitment=template.witness_commitment,
+    )
+    txids = [coinbase_tx.get_txid()] + [t["txid"] for t in template.transactions]
+    merkle_root = _tx_merkle_root(txids)
+    header = pearl_mining.IncompleteBlockHeader(
+        template.version, template.prev_block, merkle_root, template.curtime, template.bits)
+    header_ctx = {"header": header, "coinbase_tx": coinbase_tx, "transactions": template.transactions}
+    return bytes(header.to_bytes()).hex(), header_ctx
+
+
+def _production_assemble_block(header_ctx: dict, plain_proof_b64: str) -> str:
+    """Generate the ZK certificate and serialize the full Pearl block. REQUIRES
+    pearl_mining + the Pearl gateway (PearlBlock / ZKCertificate)."""
+    import pearl_mining  # type: ignore
+    from pearl_gateway.blockchain_utils.pearl_block import PearlBlock  # type: ignore
+    from pearl_gateway.blockchain_utils.pearl_header import PearlHeader  # type: ignore
+    from pearl_gateway.blockchain_utils.zk_certificate import ZKCertificate  # type: ignore
+
+    proof = pearl_mining.PlainProof.from_base64(plain_proof_b64)
+    incomplete = header_ctx["header"]
+    zk_proof = pearl_mining.generate_proof(incomplete, proof)
+    pearl_header = PearlHeader(incomplete)
+    zk_cert = ZKCertificate.from_pearl_header(pearl_header, zk_proof)
+    txns = [header_ctx["coinbase_tx"]] + [
+        __import__("bitcoinutils.transactions", fromlist=["Transaction"]).Transaction.from_raw(t["data"])
+        for t in header_ctx["transactions"]
+    ]
+    return PearlBlock(pearl_header, txns, zk_cert).serialize().hex()
+
+
+def _tx_merkle_root(txids_hex: list[str]) -> bytes:
+    """Bitcoin transaction merkle root from txids (display/big-endian hex)."""
+    level = [bytes.fromhex(t)[::-1] for t in txids_hex]  # to little-endian
+    if not level:
+        return b"\x00" * 32
+    while len(level) > 1:
+        if len(level) % 2:
+            level.append(level[-1])
+        level = [double_sha256(level[i] + level[i + 1]) for i in range(0, len(level), 2)]
+    return level[0][::-1]  # back to big-endian
+
+
+def build_production_node(cfg: config.DaemonConfig | None = None, share_target: int | None = None) -> "tuple[PoolNode, Any]":
+    """Wire a PoolNode with the real node RPC + verifiers + assembly adapters.
+
+    ``share_target`` defaults to a placeholder that MUST be calibrated to live pool
+    hashrate (sidechain difficulty = pool_hashrate * share_time)."""
+    from .chain.node_rpc import NodeRPC
+    from .pow.verify import verify_block_solution, verify_share
+
+    cfg = cfg or config.DaemonConfig()
+    node = NodeRPC(cfg.node)
+    sharechain = Sharechain()
+    if share_target is None:
+        share_target = config.MAX_TARGET >> 24  # placeholder; calibrate to hashrate
+
+    async def submit_block(block_hex: str):
+        return await asyncio.to_thread(node.submit_block, block_hex)
+
+    pool = PoolNode(
+        sharechain=sharechain,
+        share_target=share_target,
+        make_header=_production_make_header,
+        verify_share=verify_share,
+        verify_block=verify_block_solution,
+        assemble_block=_production_assemble_block,
+        submit_block=submit_block,
+    )
+    return pool, node
 
 
 def main(argv: list[str] | None = None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
-    cfg = config.DaemonConfig()
-    print(f"P2Pearl v{__version__} — decentralized zero-fee Pearl pool")
-    print(f"  parent node     : {cfg.node.url}")
-    print(f"  stratum         : {cfg.stratum_host}:{cfg.stratum_port}")
-    print(f"  p2p             : {cfg.p2p_host}:{cfg.p2p_port}")
-    print(f"  share time      : {config.SHARE_TARGET_TIME_SECONDS}s")
-    print(f"  PPLNS window    : {config.PPLNS_WINDOW_SHARES} shares")
-    print()
-    print("Consensus math, coinbase builder, node RPC and proof wrappers are ready;")
-    print("the sidechain engine, P2P layer and stratum front-end are not yet wired.")
-    print("See ROADMAP.md.")
+    print(f"P2Pearl v{__version__} daemon")
+    try:
+        pool, node = build_production_node()
+    except Exception as exc:  # pragma: no cover - needs live deps
+        print(f"could not wire production node: {exc}")
+        print("A live node needs a running pearld + a Linux-built pearl_mining + bitcoinutils.")
+        print("See ROADMAP.md (M3) and integration/.")
+        return 1
+    print(f"  parent node : {node._cfg.url if hasattr(node, '_cfg') else '?'}")
+    print("  starting poll loop (Ctrl-C to stop)")
+    try:
+        asyncio.run(pool.run(node))
+    except KeyboardInterrupt:  # pragma: no cover
+        return 0
     return 0
 
 
