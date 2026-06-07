@@ -27,11 +27,21 @@ window cap, pruning, and every rejection path). Deferred to integration: pin a h
 genesis id; explicit max-reorg-depth check (currently bounded by pruning); on-disk
 persistence (in-memory today).
 
-### M2 — `pearl_mining` bindings  ⬜
+### M2 — `pearl_mining` bindings  ✅
 - Expose an **nbits-override** plain-proof verifier (`check_jackpot_difficulty_with_nbits` /
   Go `VerifyZKCertificateWithNbits`) through `py-pearl-mining` so shares can be graded at the
   share target, not the header's block nbits. (`pow/verify.verify_share` depends on this.)
 - Confirm exact signatures of `PlainProof.from_base64`, `verify_plain_proof`, `generate_proof`.
+
+**Status: ✅ implemented & verified** (20-agent review + 49 P2Pearl tests; `zk-pow` `cargo build`
+clean, exit 0). Added `pub fn verify_plain_proof_with_nbits` (`zk-pow/src/api/verify.rs`) + the
+`#[pyfunction]` wrapper (`py-pearl-mining/src/lib.rs`) — both additive, applied in the Pearl working
+tree (see [`integration/py-pearl-mining-nbits-override.md`](integration/py-pearl-mining-nbits-override.md)).
+Fixed two real `pow/verify.py` bugs (raw-bytes header → typed `IncompleteBlockHeader.from_bytes`;
+`bool(tuple)` always-truthy → unpack `(ok, _msg)`). Added `difficulty.target_to_bits` (the
+256-bit-target → compact-`u32` converter the caller needs). Deferred: a live native test needs
+`maturin develop` on a Linux rig; the block-acceptance path (M3) must use the unmodified
+`verify_plain_proof`, never the override.
 
 ### M3 — Block assembly & submission  ⬜
 - When a share clears the parent block target: run `generate_proof` (the recursive plonky2

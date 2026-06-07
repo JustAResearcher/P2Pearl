@@ -48,3 +48,32 @@ def next_share_target(
     ratio = max(min_step, min(max_step, ratio))
     new_target = int(current_target * ratio)
     return max(1, min(MAX_TARGET, new_target))
+
+
+def target_to_bits(target: int) -> int:
+    """Encode a 256-bit ``target`` as a Bitcoin-compact ``nbits`` (u32).
+
+    Inverse of the Pearl gateway's ``bits_to_target`` (mantissa * 256**(exp-3)).
+    The Pearl proof verifier (``pearl_mining.verify_plain_proof_with_nbits``) takes
+    the share threshold as a compact ``u32`` nbits, decodes it via
+    ``nbits_to_difficulty`` and applies the ``h*w*k`` factor itself, so a share
+    target produced here must go through this encoder before it is handed to
+    ``p2pearl.pow.verify.verify_share``.
+
+    Lossy: the 24-bit mantissa is rounded DOWN, so the encoded target is ``<=`` the
+    input (a share graded at the encoded nbits is at worst very slightly *harder*
+    than ``target``, never easier).
+    """
+    if target <= 0:
+        return 0
+    nbytes = (target.bit_length() + 7) // 8
+    if nbytes <= 3:
+        mantissa = target << (8 * (3 - nbytes))
+    else:
+        mantissa = target >> (8 * (nbytes - 3))
+    # The compact format's mantissa is signed; if the top bit is set, shift down a
+    # byte and bump the exponent so the sign bit stays clear.
+    if mantissa & 0x00800000:
+        mantissa >>= 8
+        nbytes += 1
+    return (nbytes << 24) | (mantissa & 0x007FFFFF)

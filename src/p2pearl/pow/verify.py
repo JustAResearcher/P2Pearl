@@ -1,7 +1,7 @@
 """Proof verification wrappers over the Pearl ``pearl_mining`` (PyO3) module.
 
 Two responsibilities:
-  1. The nested-target check, ``meets_target`` — used for BOTH the share target
+  1. The nested-target check, ``meets_target`` - used for BOTH the share target
      and the parent block target (the same ``hash_jackpot`` is graded against two
      thresholds). This is pure Python and always available.
   2. Cheap verification of an incoming share's ``plain_proof`` (CPU, no GEMM
@@ -30,7 +30,7 @@ def meets_target(hash_jackpot_le: bytes, target: int) -> bool:
 
     Pearl compares the 256-bit ``hash_jackpot`` as a LITTLE-endian integer against
     the (already h*w*k-adjusted) bound. Pass the share bound for a share check and
-    the block bound for a block check — the hash is identical, only the threshold
+    the block bound for a block check - the hash is identical, only the threshold
     differs (this is what makes one solution able to satisfy both).
     """
     if len(hash_jackpot_le) != 32:
@@ -42,10 +42,22 @@ def verify_share(incomplete_header_bytes: bytes, plain_proof_b64: str, share_nbi
     """Verify a submitted share's plain proof against the SHARE target.
 
     A share clears the easy share target, not the block ``nbits`` embedded in the
-    header, so verification must grade the recomputed jackpot at ``share_nbits``.
+    header, so verification grades the recomputed jackpot at ``share_nbits``.
+
+    ``share_nbits`` is a Bitcoin-compact ``u32`` target (NOT a raw 256-bit value):
+    the Rust verifier decodes it via ``nbits_to_difficulty`` and applies the
+    ``h*w*k`` difficulty-adjustment factor itself, so the bound matches how the
+    pool grades. Passing a raw 256-bit target would skip the ``h*w*k`` multiply
+    (~2**19) and grade far too hard - zero shares. Convert a 256-bit share target
+    to compact nbits with ``p2pearl.consensus.difficulty.target_to_bits``.
+
     The Rust verifier supports an nbits override
-    (``check_jackpot_difficulty_with_nbits`` / Go ``VerifyZKCertificateWithNbits``);
-    if the PyO3 layer does not yet expose it, add a thin binding (see ROADMAP).
+    (``check_jackpot_difficulty_with_nbits`` / Go ``VerifyZKCertificateWithNbits``),
+    surfaced to Python as ``pearl_mining.verify_plain_proof_with_nbits``. That
+    binding mirrors ``verify_plain_proof``: it takes a typed
+    ``IncompleteBlockHeader`` plus the share ``nbits`` and returns
+    ``(ok: bool, message: str)``. A rejected proof is ``(False, msg)`` - not an
+    exception - so we unpack and return ``ok``.
     """
     pm = _pearl_mining()
     proof = pm.PlainProof.from_base64(plain_proof_b64)
@@ -54,6 +66,13 @@ def verify_share(incomplete_header_bytes: bytes, plain_proof_b64: str, share_nbi
         raise NotImplementedError(
             "pearl_mining exposes no nbits-override plain-proof verifier. Expose "
             "check_jackpot_difficulty_with_nbits through py-pearl-mining so shares "
-            "can be graded at the share target (see ROADMAP, 'pearl_mining bindings')."
+            "can be graded at the share target (see ROADMAP M2)."
         )
-    return bool(verify_with_nbits(incomplete_header_bytes, proof, share_nbits))
+    # The binding takes a typed IncompleteBlockHeader, not raw bytes. from_bytes
+    # enforces the 76-byte layout and reverses prev_block/merkle_root back to the
+    # internal orientation that job_key = blake3(header || config) expects.
+    header = pm.IncompleteBlockHeader.from_bytes(incomplete_header_bytes)
+    # Returns (ok, message); a rejected proof is (False, msg). Unpack element [0]
+    # so a falsy result is not masked by tuple-truthiness: bool((False, "...")) is True.
+    ok, _msg = verify_with_nbits(header, proof, share_nbits)
+    return bool(ok)
