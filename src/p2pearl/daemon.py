@@ -156,6 +156,8 @@ class PoolNode:
             timestamp=template.curtime,
             share_target=self.share_target,
             block_nbits=template.bits,
+            coinbase_version=template.version,
+            coinbase_value=template.coinbase_value,
             miner_address=worker_address,
             payout_set_hash=payout_set_hash,
         )
@@ -222,24 +224,38 @@ class PoolNode:
 # (see integration/stratum-dialect.md) before mainnet use.
 # ---------------------------------------------------------------------------- #
 
-def _production_make_header(template: ParentTemplate, payouts: list[Payout], share_id: bytes):
-    """Build the coinbase (PPLNS P2TR outputs + OP_RETURN<share_id>), the tx merkle
-    root, and the 76-byte incomplete header. REQUIRES bitcoinutils + pearl_mining."""
+def _build_share_header(version, prev_block, timestamp, nbits, payouts, share_id,
+                        coinbase_value, parent_height):
+    """Deterministically build the coinbase-only header a share's PoW commits to.
+
+    Used by BOTH the finder (``_production_make_header``) and a verifying peer
+    (``verify_incoming``) so reconstruction is byte-identical: coinbase-only (no
+    mempool txs), no coinbaseaux flags, fixed extranonce, and the empty-block witness
+    commitment computed deterministically — ``double_sha256(64 zero bytes)``, the value
+    pearld's GBT returns for an empty mempool. Returns ``(IncompleteBlockHeader,
+    coinbase_tx)``. REQUIRES bitcoinutils + pearl_mining.
+    """
     from .chain.coinbase import assemble_coinbase_tx, build_coinbase_outputs
 
     import pearl_mining  # type: ignore
 
-    outputs = build_coinbase_outputs(payouts, share_id, template.coinbase_value)
+    outputs = build_coinbase_outputs(payouts, share_id, coinbase_value)
     coinbase_tx = assemble_coinbase_tx(
-        outputs, template.height,
-        coinbase_aux={"flags": template.coinbaseaux_flags} if template.coinbaseaux_flags else None,
-        default_witness_commitment=template.witness_commitment,
-    )
-    txids = [coinbase_tx.get_txid()] + [t["txid"] for t in template.transactions]
-    merkle_root = _tx_merkle_root(txids)
-    header = pearl_mining.IncompleteBlockHeader(
-        template.version, template.prev_block, merkle_root, template.curtime, template.bits)
-    header_ctx = {"header": header, "coinbase_tx": coinbase_tx, "transactions": template.transactions}
+        outputs, parent_height, coinbase_aux=None,
+        default_witness_commitment=double_sha256(b"\x00" * 64).hex())
+    merkle_root = _tx_merkle_root([coinbase_tx.get_txid()])
+    header = pearl_mining.IncompleteBlockHeader(version, prev_block, merkle_root, timestamp, nbits)
+    return header, coinbase_tx
+
+
+def _production_make_header(template: ParentTemplate, payouts: list[Payout], share_id: bytes):
+    """Build a candidate share's coinbase-only header + coinbase via the shared
+    deterministic builder (so peers reconstruct it identically). REQUIRES bitcoinutils
+    + pearl_mining."""
+    header, coinbase_tx = _build_share_header(
+        template.version, template.prev_block, template.curtime, template.bits,
+        payouts, share_id, template.coinbase_value, template.height)
+    header_ctx = {"header": header, "coinbase_tx": coinbase_tx, "transactions": []}
     return bytes(header.to_bytes()).hex(), header_ctx
 
 
@@ -277,12 +293,38 @@ def _tx_merkle_root(txids_hex: list[str]) -> bytes:
     return level[0][::-1]  # back to big-endian
 
 
+def _make_verify_incoming(sharechain: Sharechain, min_payout: int):
+    """Build the production P2P ``verify_incoming(share, proof_b64) -> bool``.
+
+    Trustless: recompute the deterministic PPLNS payouts as of the share's parent from
+    OUR OWN sharechain, confirm the share commits to exactly that set (``payout_set_hash``
+    — so a peer cannot forge the reward split), reconstruct the EXACT header the finder
+    mined (the shared deterministic builder), and verify the proof at the share target.
+    REQUIRES bitcoinutils + pearl_mining (lazy). The unit-tested P2P layer injects a fake.
+    """
+    from .pow.verify import verify_share
+
+    def verify_incoming(share: ShareBlock, proof_b64: str) -> bool:
+        weights = sharechain.pplns_weights(share.prev_share_id)
+        payouts = compute_pplns_payouts(share.coinbase_value, weights, min_payout)
+        if double_sha256(serialize_payouts(payouts)) != share.payout_set_hash:
+            return False  # coinbase doesn't pay the deterministic PPLNS set
+        header, _cb = _build_share_header(
+            share.coinbase_version, share.parent_prev_block, share.timestamp,
+            share.block_nbits, payouts, share.share_id(), share.coinbase_value,
+            share.parent_height)
+        return verify_share(bytes(header.to_bytes()), proof_b64, target_to_bits(share.share_target))
+
+    return verify_incoming
+
+
 def build_production_node(cfg: config.DaemonConfig | None = None, share_target: int | None = None) -> "tuple[PoolNode, Any]":
     """Wire a PoolNode with the real node RPC + verifiers + assembly adapters.
 
     ``share_target`` defaults to a placeholder that MUST be calibrated to live pool
     hashrate (sidechain difficulty = pool_hashrate * share_time)."""
     from .chain.node_rpc import NodeRPC
+    from .p2p.node import P2PNode
     from .pow.verify import verify_block_solution, verify_share
     from .stratum.server import StratumServer
 
@@ -310,26 +352,49 @@ def build_production_node(cfg: config.DaemonConfig | None = None, share_target: 
     stratum = StratumServer(pool.handle_submit, host=cfg.stratum_host, port=cfg.stratum_port)
     pool.stratum = stratum
     stratum.set_job_builder(pool.build_job_for)
+
+    # P2P gossip: shares/blocks propagate to peers; an incoming share is VERIFIED by
+    # reconstructing its header (the same deterministic build the finder used) before
+    # it is added or relayed -> a peer can forge neither the PoW nor the PPLNS split.
+    async def _on_new_share(_share):
+        await stratum.refresh()                # a peer's share advanced the tip -> new jobs
+
+    p2p = P2PNode(
+        sharechain=sharechain,
+        verify_incoming=_make_verify_incoming(sharechain, pool._min_payout),
+        host=cfg.p2p_host, port=cfg.p2p_port, on_new_share=_on_new_share)
+    pool._broadcast_share = p2p.broadcast_share
+    pool._broadcast_block = p2p.broadcast_block
+    pool.p2p = p2p
     return pool, node
 
 
-async def _serve(pool: "PoolNode", node: Any) -> None:
-    """Run the miner-facing stratum server and the parent-chain poll loop together.
+async def _serve(pool: "PoolNode", node: Any, peers=()) -> None:
+    """Run the stratum server, the P2P gossip layer, and the parent-chain poll loop.
 
-    Primes the first template (fails fast + cleanly if pearld is unreachable), binds
-    the stratum so a connecting miner gets a job immediately, then serves until stopped.
+    Primes the first template (fails fast + cleanly if pearld is unreachable), binds the
+    stratum + P2P listeners, connects any configured peers, then serves until stopped.
     """
     gbt = await asyncio.to_thread(node.get_block_template)
     pool.set_template(ParentTemplate.from_gbt(gbt))
     await pool.stratum.start()
-    host, port = pool.stratum.host, pool.stratum.port
-    print(f"  stratum     : {host}:{port}  (point your miners here)", flush=True)
-    print(f"  e.g.  SRBMiner-MULTI --algorithm pearlhash --pool {host}:{port} --wallet <prl1...> --disable-cpu", flush=True)
+    if getattr(pool, "p2p", None) is not None:
+        await pool.p2p.start()
+        for host, port in peers:
+            try:
+                await pool.p2p.connect(host, int(port))
+            except Exception as exc:
+                print(f"  p2p peer    : could not connect {host}:{port}: {exc}", flush=True)
+        print(f"  p2p         : {pool.p2p.host}:{pool.p2p.port}  ({pool.p2p.peer_count} peer(s) connected)", flush=True)
+    s_host, s_port = pool.stratum.host, pool.stratum.port
+    print(f"  stratum     : {s_host}:{s_port}  (point your miners here)", flush=True)
+    print(f"  e.g.  SRBMiner-MULTI --algorithm pearlhash --pool {s_host}:{s_port} --wallet <prl1...> --disable-cpu", flush=True)
     print("  serving — Ctrl-C to stop", flush=True)
     await asyncio.gather(pool.run(node), pool.stratum.serve_forever())
 
 
 def main(cfg: "config.DaemonConfig | None" = None, share_target: int | None = None) -> int:
+    cfg = cfg or config.DaemonConfig()
     print(f"P2Pearl v{__version__} daemon")
     try:
         pool, node = build_production_node(cfg, share_target)
@@ -340,7 +405,7 @@ def main(cfg: "config.DaemonConfig | None" = None, share_target: int | None = No
         return 1
     print(f"  parent node : {node._cfg.url if hasattr(node, '_cfg') else '?'}")
     try:
-        asyncio.run(_serve(pool, node))
+        asyncio.run(_serve(pool, node, cfg.peers))
     except KeyboardInterrupt:  # pragma: no cover
         return 0
     except Exception as exc:  # pragma: no cover - needs a live pearld

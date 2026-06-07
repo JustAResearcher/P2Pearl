@@ -40,6 +40,10 @@ def main(argv: list[str] | None = None) -> int:
     dp.add_argument("--rpc-pass", help="pearld RPC password (or env P2PEARL_RPC_PASS; default 'pass')")
     dp.add_argument("--stratum-host", default="0.0.0.0", help="stratum bind host (default 0.0.0.0)")
     dp.add_argument("--stratum-port", type=int, default=3360, help="stratum port (default 3360)")
+    dp.add_argument("--p2p-host", default="0.0.0.0", help="P2P bind host (default 0.0.0.0)")
+    dp.add_argument("--p2p-port", type=int, default=37900, help="P2P port (default 37900)")
+    dp.add_argument("--peer", action="append", metavar="HOST:PORT",
+                    help="connect to a peer node for share gossip (repeatable)")
     dp.add_argument("--share-target", help="sidechain share target as int/hex (default: built-in placeholder)")
 
     args = parser.parse_args(argv)
@@ -62,8 +66,14 @@ def main(argv: list[str] | None = None) -> int:
                 user=args.rpc_user or os.environ.get("P2PEARL_RPC_USER", "user"),
                 password=args.rpc_pass or os.environ.get("P2PEARL_RPC_PASS", "pass"),
             )
+            peers = []
+            for spec in (args.peer or []):
+                host, sep, port = spec.rpartition(":")
+                if sep and port:
+                    peers.append((host, int(port)))
             dcfg = cfgmod.DaemonConfig(
-                node=node_cfg, stratum_host=args.stratum_host, stratum_port=args.stratum_port)
+                node=node_cfg, stratum_host=args.stratum_host, stratum_port=args.stratum_port,
+                p2p_host=args.p2p_host, p2p_port=args.p2p_port, peers=tuple(peers))
             st = int(args.share_target, 0) if args.share_target else None
             return daemon.main(cfg=dcfg, share_target=st)
         parser.print_help()

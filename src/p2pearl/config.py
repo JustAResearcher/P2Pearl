@@ -20,7 +20,7 @@ ADDRESS_HRP = "prl"                      # bech32m P2TR human-readable part (mai
 PARENT_RPC_DEFAULT_URL = "http://127.0.0.1:44107"
 
 # --- P2Pearl sidechain consensus (the "sharechain") ---
-SIDECHAIN_VERSION = 1
+SIDECHAIN_VERSION = 2          # v2: share carries coinbase_version + coinbase_value (peer header reconstruction)
 SHARE_TARGET_TIME_SECONDS = 10           # one share every ~10s on average (per-pool difficulty)
 PPLNS_WINDOW_SHARES = 1000               # reward look-back; tune to ~a few parent blocks of work
 UNCLE_BLOCK_DEPTH = 3                    # an uncle may be referenced up to N sidechain heights back
@@ -54,4 +54,5 @@ class DaemonConfig:
     stratum_port: int = 3360
     p2p_host: str = "0.0.0.0"
     p2p_port: int = 37900
+    peers: tuple = ()                    # ((host, port), ...) outbound P2P peers to dial on start
     data_dir: str = "./p2pearl-data"

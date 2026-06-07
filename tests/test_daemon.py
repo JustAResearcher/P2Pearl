@@ -87,14 +87,32 @@ def test_build_job_none_without_template():
     assert node.build_job_for(ADDR_A) is None
 
 
-def test_build_production_node_wires_stratum():
-    # `p2pearl daemon` must actually serve miners: build_production_node should wire a
-    # StratumServer whose per-connection job source is build_job_for. (No pearld /
-    # pearl_mining needed to *construct* it; the lazy deps load only when mining.)
+def test_build_production_node_wires_stratum_and_p2p():
+    # `p2pearl daemon` must serve miners AND gossip to peers: build_production_node wires
+    # a StratumServer (job source = build_job_for) + a P2PNode (broadcast hooks). No
+    # pearld / pearl_mining needed to *construct* it; the lazy deps load only when mining.
     from p2pearl.daemon import build_production_node
     pool, node = build_production_node()
-    assert pool.stratum is not None
-    assert pool.stratum._job_builder == pool.build_job_for
+    assert pool.stratum is not None and pool.stratum._job_builder == pool.build_job_for
+    assert pool.p2p is not None
+    assert pool._broadcast_share == pool.p2p.broadcast_share
+    assert pool._broadcast_block == pool.p2p.broadcast_block
+
+
+def test_verify_incoming_rejects_forged_payout_set():
+    # A peer recomputes the deterministic PPLNS payouts from its OWN sharechain; a share
+    # whose payout_set_hash doesn't match is rejected before any header reconstruction
+    # (so no pearl_mining needed). This is what stops a peer forging the reward split.
+    from p2pearl.consensus.share import ShareBlock
+    from p2pearl.daemon import _make_verify_incoming
+    verify = _make_verify_incoming(Sharechain(window=10), min_payout=0)
+    forged = ShareBlock(
+        version=2, sidechain_height=0, prev_share_id=GENESIS_PREV,
+        parent_prev_block=b"\x00" * 32, parent_height=1, timestamp=1000,
+        share_target=SHARE_TARGET, block_nbits=0x1E01FFFF,
+        coinbase_version=0x20000000, coinbase_value=5_000_000_000,
+        miner_address=ADDR_A, payout_set_hash=b"\xde" * 32)   # bogus commitment
+    assert verify(forged, PROOF_B64) is False
 
 
 def test_serialize_payouts_deterministic():

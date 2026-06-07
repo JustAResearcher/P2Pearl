@@ -18,6 +18,8 @@ def _sample(**over):
         timestamp=1_777_000_000,
         share_target=(1 << 240),
         block_nbits=0x1E01FFFF,
+        coinbase_version=0x20000000,
+        coinbase_value=5_000_000_000,
         miner_address="prl1pexampleexampleexampleexampleexampleexampleexampleexa",
         payout_set_hash=b"\x33" * 32,
         uncle_ids=[b"\x55" * 32, b"\x66" * 32],
@@ -50,6 +52,8 @@ def test_id_changes_with_any_field():
     assert _sample(timestamp=1_777_000_001).share_id() != base_id
     assert _sample(miner_address="prl1pother").share_id() != base_id
     assert _sample(uncle_ids=[]).share_id() != base_id
+    assert _sample(coinbase_value=4_999_999_999).share_id() != base_id  # committed
+    assert _sample(coinbase_version=0x20000001).share_id() != base_id   # committed
     # pow_hash is non-committed evidence: it must NOT change the committed id.
     assert _sample(pow_hash=b"\x99" * 32).share_id() == base_id
 

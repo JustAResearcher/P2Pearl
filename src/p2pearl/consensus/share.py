@@ -67,6 +67,8 @@ class ShareBlock:
     timestamp: int                   # u32  unix seconds
     share_target: int                # 256-bit sidechain (share) threshold
     block_nbits: int                 # u32  parent compact target carried in the header
+    coinbase_version: int            # u32  parent block header version (peers reconstruct the header)
+    coinbase_value: int              # u64  total grains the coinbase distributes (subsidy [+ fees])
     miner_address: str               # bech32m P2TR payout address of this share's finder
     payout_set_hash: bytes           # 32   binds the deterministic PPLNS coinbase output set
     uncle_ids: list[bytes] = field(default_factory=list)  # each 32; GHOST uncles referenced by this share
@@ -96,6 +98,8 @@ class ShareBlock:
         out += struct.pack("<I", self.timestamp)
         out += self.share_target.to_bytes(32, "big")
         out += struct.pack("<I", self.block_nbits)
+        out += struct.pack("<I", self.coinbase_version)
+        out += struct.pack("<Q", self.coinbase_value)
         addr = self.miner_address.encode("ascii")
         out += _write_varint(len(addr)) + addr
         out += self.payout_set_hash
@@ -115,6 +119,8 @@ class ShareBlock:
         timestamp = struct.unpack_from("<I", data, off)[0]; off += 4
         share_target = int.from_bytes(data[off:off + 32], "big"); off += 32
         block_nbits = struct.unpack_from("<I", data, off)[0]; off += 4
+        coinbase_version = struct.unpack_from("<I", data, off)[0]; off += 4
+        coinbase_value = struct.unpack_from("<Q", data, off)[0]; off += 8
         addr_len, off = _read_varint(data, off)
         miner_address = data[off:off + addr_len].decode("ascii"); off += addr_len
         payout_set_hash = data[off:off + 32]; off += 32
@@ -131,6 +137,8 @@ class ShareBlock:
             timestamp=timestamp,
             share_target=share_target,
             block_nbits=block_nbits,
+            coinbase_version=coinbase_version,
+            coinbase_value=coinbase_value,
             miner_address=miner_address,
             payout_set_hash=payout_set_hash,
             uncle_ids=uncle_ids,

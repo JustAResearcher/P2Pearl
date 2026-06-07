@@ -5,6 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+from p2pearl.config import SIDECHAIN_VERSION  # noqa: E402
 from p2pearl.consensus.pplns import uncle_weight  # noqa: E402
 from p2pearl.consensus.share import ShareBlock  # noqa: E402
 from p2pearl.consensus.sharechain import GENESIS_PREV, Sharechain  # noqa: E402
@@ -13,7 +14,7 @@ Z = b"\x00" * 32
 T = 1 << 248  # base share target -> difficulty ~255
 
 
-def mk(prev, height, *, miner="prlA", target=T, ts=1000, uncles=None, parent_height=1, version=1):
+def mk(prev, height, *, miner="prlA", target=T, ts=1000, uncles=None, parent_height=1, version=SIDECHAIN_VERSION):
     return ShareBlock(
         version=version,
         sidechain_height=height,
@@ -23,6 +24,8 @@ def mk(prev, height, *, miner="prlA", target=T, ts=1000, uncles=None, parent_hei
         timestamp=ts,
         share_target=target,
         block_nbits=0x1E01FFFF,
+        coinbase_version=0x20000000,
+        coinbase_value=5_000_000_000,
         miner_address=miner,
         payout_set_hash=Z,
         pow_hash=Z,
@@ -158,6 +161,19 @@ def test_uncle_inclusion_payout_and_weight():
     d = g.difficulty()
     assert weights["prlC"] == d and weights["prlA"] == d and weights["prlG"] == d
     assert weights["prlB"] == uncle_weight(d, sc.uncle_penalty_percent)
+
+
+def test_pplns_weights_at_tip_id():
+    # pplns_weights(tip_id) computes the window AS OF a given share -- a verifying peer
+    # recomputes the payouts a share's finder committed by walking from prev_share_id.
+    sc = Sharechain(window=8)
+    g = _genesis(sc)                                  # prlG @0
+    a = mk(g.share_id(), 1, miner="prlA"); add(sc, a)
+    b = mk(a.share_id(), 2, miner="prlB"); add(sc, b)
+    d = g.difficulty()
+    assert dict(sc.pplns_weights(a.share_id())) == {"prlG": d, "prlA": d}        # window as of A
+    assert dict(sc.pplns_weights()) == {"prlG": d, "prlA": d, "prlB": d}         # window at the tip
+    assert sc.pplns_weights(GENESIS_PREV) == []                                  # nothing before genesis
 
 
 def test_uncle_unknown_rejected():

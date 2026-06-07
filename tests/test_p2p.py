@@ -30,6 +30,8 @@ def _share(prev, height, miner="prl1pqqqqminer", target=1 << 248):
         timestamp=1000 + height,
         share_target=target,
         block_nbits=0x1E01FFFF,
+        coinbase_version=0x20000000,
+        coinbase_value=5_000_000_000,
         miner_address=miner,
         payout_set_hash=b"\x33" * 32,
     )

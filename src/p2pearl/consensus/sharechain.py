@@ -139,17 +139,20 @@ class Sharechain:
         return AddResult(True, is_best, "")
 
     # ------------------------------------------------------------------ PPLNS
-    def pplns_weights(self) -> list[tuple[str, int]]:
+    def pplns_weights(self, tip_id: bytes | None = None) -> list[tuple[str, int]]:
         """Sum (uncle-penalized) share difficulty per address over the window.
 
-        Walks back ``window`` main-chain shares from the best tip. Each main-chain
-        share contributes its full difficulty to its miner; each uncle it
-        references contributes ``uncle_weight`` (penalized), counted once. The
-        result feeds :func:`p2pearl.consensus.pplns.compute_pplns_payouts`.
+        Walks back ``window`` main-chain shares from ``tip_id`` (default: the best
+        tip). Each main-chain share contributes its full difficulty to its miner;
+        each uncle it references contributes ``uncle_weight`` (penalized), counted
+        once. Pass a specific share id to compute the window *as of* that share —
+        a peer verifying an incoming share recomputes the same payouts the finder
+        committed by walking from the share's ``prev_share_id``. The result feeds
+        :func:`p2pearl.consensus.pplns.compute_pplns_payouts`.
         """
         weights: dict[str, int] = {}
         seen_uncles: set[bytes] = set()
-        cur = self._best_tip
+        cur = tip_id if tip_id is not None else self._best_tip
         count = 0
         while cur is not None and count < self.window:
             entry = self._entries.get(cur)

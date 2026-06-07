@@ -25,13 +25,15 @@ p2pearl.exe daemon          :: wire + run a live pool node (needs pearld + pearl
 ```bash
 pip install -e .
 p2pearl daemon --rpc-url http://127.0.0.1:44107 --rpc-user <u> --rpc-pass <p>
+# join other operators' nodes so you share one sidechain (gossip):
+p2pearl daemon --peer <other-node-ip>:37900 --peer <another-ip>:37900
 # then point miners at it (same as any Pearlhash pool):
 SRBMiner-MULTI --algorithm pearlhash --pool <node-ip>:3360 --wallet <prl1...> --disable-cpu
 ```
 
-`p2pearl daemon --help` lists the flags (`--stratum-port`, `--share-target`, RPC creds; creds also read from `P2PEARL_RPC_USER` / `P2PEARL_RPC_PASS`). Validated on regtest: a real SRBMiner GPU mines into `p2pearl daemon` and the blocks pearld accepts pay the miner's PPLNS share with zero operator outputs.
+`p2pearl daemon --help` lists the flags (`--stratum-port`, `--p2p-port`, `--peer host:port` to join other nodes, `--share-target`, RPC creds; creds also read from `P2PEARL_RPC_USER` / `P2PEARL_RPC_PASS`). Validated on regtest: a real SRBMiner GPU mines into `p2pearl daemon`, the accepted blocks pay the miner's PPLNS share with zero operator outputs, and a second peered node independently verifies and syncs the gossiped shares.
 
-> **Decentralization status:** today each node runs **standalone** (its blocks pay its own connected miners' PPLNS window). The cross-operator **P2P gossip** that fuses many nodes into one shared, trustless pool is the next milestone — it needs trustless share verification (`verify_incoming`), which in turn needs the share to carry enough to deterministically reconstruct each other's headers. Tracked in [issue #1](https://github.com/JustAResearcher/P2Pearl/issues/1).
+> **Decentralization:** nodes form one shared pool by **gossiping shares over P2P** (`--peer`). Each incoming share is **trustlessly verified** — a peer recomputes the deterministic PPLNS payouts from its *own* sharechain, confirms the share commits to exactly that set, reconstructs the byte-identical header, and verifies the proof (`verify_incoming`). The share carries `coinbase_version` + `coinbase_value` so any peer can reproduce the header; a finder therefore cannot forge the reward split or fake the PoW. Validated end-to-end: two nodes converge on the same sharechain via independent verification. (v1 shares are coinbase-only — no transaction-fee collection yet.) Tracked in [issue #1](https://github.com/JustAResearcher/P2Pearl/issues/1).
 
 ## Why this is feasible (and why Pearl is a clean target)
 
