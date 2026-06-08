@@ -146,6 +146,36 @@ async def _sync():
         await c.stop()
 
 
+def test_window_sync_chunked_over_batch():
+    asyncio.run(_sync_chunked())
+
+
+async def _sync_chunked():
+    # A window larger than SYNC_BATCH must sync via MULTIPLE 'shares' messages (a single
+    # JSON line bundling every proof would exceed READ_LIMIT). All shares still arrive,
+    # oldest-first, so a joining node rebuilds the full chain.
+    a = _node()
+    prev, shares = GENESIS_PREV, []
+    for h in range(20):                          # > SYNC_BATCH (8) -> 3 messages
+        s = _share(prev, h)
+        a.sharechain.add_share(s, verified=True)
+        a._store_proof(s.share_id().hex(), PROOF_B64)
+        shares.append(s)
+        prev = s.share_id()
+
+    c = _node()
+    await a.start()
+    await c.start()
+    try:
+        await c.connect("127.0.0.1", a.port)
+        assert await _wait_until(lambda: len(c.sharechain) >= 20, timeout=8.0)
+        assert c.sharechain.height() == 19
+        assert c.sharechain.tip().share_id() == shares[-1].share_id()
+    finally:
+        await a.stop()
+        await c.stop()
+
+
 def test_block_relay():
     asyncio.run(_block())
 

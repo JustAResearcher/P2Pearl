@@ -52,6 +52,8 @@ READ_LIMIT = 2 ** 22          # proof / shares messages carry 60-370 KB base64 p
 MAX_MSGS_PER_CONN = 200_000   # coarse flood cap before dropping a peer
 MAX_STORED_PROOFS = 4096      # bound the on-demand proof cache
 SYNC_LIMIT = 2048             # max shares per window sync
+SYNC_BATCH = 8                # shares per 'shares' message — each proof is ~137-370 KB,
+                              # so bundling the whole window in one line would exceed READ_LIMIT
 
 VerifyIncoming = Callable[[ShareBlock, str], bool]
 OnNewShare = Callable[[ShareBlock], Awaitable[None]]
@@ -176,6 +178,8 @@ class P2PNode:
                 await self._dispatch(peer, msg)
         except (ConnectionError, OSError):
             pass
+        except ValueError:        # readline LimitOverrunError: oversized line -> drop peer
+            _LOGGER.warning("peer %d sent an oversized message; dropping", peer.peer_id)
         finally:
             self._peers.discard(peer)
             try:
@@ -252,12 +256,21 @@ class P2PNode:
         await self._announce(share, exclude=peer)   # relay onward
 
     async def _h_getshares(self, peer: _Peer, msg: dict) -> None:
-        pairs = []
+        # Stream the window oldest-first in BATCHES. Bundling every share+proof into one
+        # JSON line can exceed READ_LIMIT (proofs are ~137-370 KB), which would break a
+        # peer joining a populated pool; several smaller messages stay under the limit and
+        # keep parents ahead of children (``_h_shares`` adds each only if its parent exists).
+        batch: list = []
         for share in self._window_shares(int(msg.get("from", 0))):
             proof = self._proofs.get(share.share_id().hex())
-            if proof is not None:                    # only serve shares we can prove
-                pairs.append([share.serialize().hex(), proof])
-        await peer.send({"t": "shares", "shares": pairs})
+            if proof is None:                        # only serve shares we can prove
+                continue
+            batch.append([share.serialize().hex(), proof])
+            if len(batch) >= SYNC_BATCH:
+                await peer.send({"t": "shares", "shares": batch})
+                batch = []
+        if batch:
+            await peer.send({"t": "shares", "shares": batch})
 
     async def _h_shares(self, peer: _Peer, msg: dict) -> None:
         # Window sync carries proofs inline and is ordered oldest-first, so each

@@ -1,6 +1,6 @@
 [project]
 name = "p2pearl"
-version = "0.0.9"
+version = "0.0.10"
 description = "P2Pearl — a decentralized, zero-fee P2Pool-style mining pool for Pearl (Pearlhash PoUW)"
 readme = "README.md"
 requires-python = ">=3.10"
