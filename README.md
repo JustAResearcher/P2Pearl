@@ -20,7 +20,7 @@ p2pearl.exe daemon          :: wire + run a live pool node (needs pearld + pearl
 
 ### Run a pool node (operators, Linux)
 
-`p2pearl daemon` connects to your local `pearld`, serves a stratum port your GPU miners point at, and — when it finds a Pearl block — pays the PPLNS window directly in the coinbase (no operator wallet, no fee). It needs a running `pearld` and the native `pearl_mining` build (see the M6 notes in [issue #1](https://github.com/JustAResearcher/P2Pearl/issues/1)):
+`p2pearl daemon` connects to your local `pearld`, serves a stratum port your GPU miners point at, and — when it finds a Pearl block — pays the PPLNS window directly in the coinbase (no operator wallet, no fee). It needs a running `pearld` and a `pearl_mining` build with the share-grading binding — **[`docs/running-a-node.md`](docs/running-a-node.md)** is the full from-source recipe (clone Pearl, run `tools/apply_m2_binding.py`, build). In short:
 
 ```bash
 pip install -e .

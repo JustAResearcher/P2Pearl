@@ -6,9 +6,10 @@ block `nbits`. The Pearl proof verifier supports this (`zk-pow` has
 but the **plain-proof** path was never wired to it and the PyO3 module never
 exposed it. M2 adds a thin, additive binding.
 
-> These two edits live in the **Pearl repo** (`C:/Source/pearl`), not in P2Pearl.
-> They have been applied to the Pearl working tree (uncommitted). P2Pearl depends
-> on a `pearl_mining` built from this state; the P2Pearl-side code degrades
+> These two edits go in the **Pearl repo**, not in P2Pearl. Apply them to a fresh
+> clone with **[`tools/apply_m2_binding.py`](../tools/apply_m2_binding.py)** (additive +
+> idempotent), then build `pearl_mining` — see
+> [`docs/running-a-node.md`](../docs/running-a-node.md). P2Pearl's code degrades
 > gracefully (clear `NotImplementedError`) if the binding is absent.
 
 ## Edit 1 — `zk-pow/src/api/verify.rs` (new public fn, additive)
