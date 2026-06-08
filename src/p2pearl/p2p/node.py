@@ -58,6 +58,7 @@ SYNC_BATCH = 8                # shares per 'shares' message — each proof is ~1
 VerifyIncoming = Callable[[ShareBlock, str], bool]
 OnNewShare = Callable[[ShareBlock], Awaitable[None]]
 OnBlock = Callable[[str], Awaitable[None]]
+OnBlockCandidate = Callable[[ShareBlock, str], Awaitable[None]]   # a verified live share -> maybe submit its block
 
 
 def _encode(msg: dict) -> bytes:
@@ -88,6 +89,7 @@ class P2PNode:
         port: int = 37900,
         on_new_share: OnNewShare | None = None,
         on_block: OnBlock | None = None,
+        on_block_candidate: OnBlockCandidate | None = None,
     ) -> None:
         self.sharechain = sharechain
         self._verify = verify_incoming
@@ -95,6 +97,7 @@ class P2PNode:
         self.port = port
         self._on_new_share = on_new_share
         self._on_block = on_block
+        self._on_block_candidate = on_block_candidate
         self._peers: set[_Peer] = set()
         self._known_addrs: set[tuple[str, int]] = set()
         self._proofs: "OrderedDict[str, str]" = OrderedDict()   # share_id hex -> proof b64
@@ -254,6 +257,14 @@ class P2PNode:
         if self._on_new_share is not None:
             await self._on_new_share(share)
         await self._announce(share, exclude=peer)   # relay onward
+        if self._on_block_candidate is not None:
+            # If this LIVE share also clears the block target, race to submit its block.
+            # Fire-and-forget: the prove takes seconds and must not stall this peer's read
+            # loop or delay relaying the share to other peers. (Window-sync shares are stale,
+            # so only the live path triggers this.)
+            t = asyncio.ensure_future(self._on_block_candidate(share, proof_b64))
+            self._tasks.add(t)
+            t.add_done_callback(self._tasks.discard)
 
     async def _h_getshares(self, peer: _Peer, msg: dict) -> None:
         # Stream the window oldest-first in BATCHES. Bundling every share+proof into one

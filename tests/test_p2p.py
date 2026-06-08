@@ -200,6 +200,35 @@ async def _block():
         await b.stop()
 
 
+def test_on_block_candidate_fires_for_gossiped_share():
+    asyncio.run(_block_candidate())
+
+
+async def _block_candidate():
+    # A verified LIVE gossiped share fires on_block_candidate on the receiver, with the
+    # share + its proof — the hook the daemon uses to race-submit a peer's found block.
+    seen = []
+
+    async def on_cand(share, proof_b64):
+        seen.append((share.share_id(), proof_b64))
+
+    a = _node()
+    b = P2PNode(sharechain=Sharechain(window=100), verify_incoming=(lambda s, p: True),
+                host="127.0.0.1", port=0, on_block_candidate=on_cand)
+    await a.start()
+    await b.start()
+    try:
+        await b.connect("127.0.0.1", a.port)
+        assert await _wait_until(lambda: a.peer_count >= 1 and b.peer_count >= 1)
+        g = _share(GENESIS_PREV, 0)
+        await a.broadcast_share(g, PROOF_B64)
+        assert await _wait_until(lambda: len(seen) >= 1)
+        assert seen[0] == (g.share_id(), PROOF_B64)
+    finally:
+        await a.stop()
+        await b.stop()
+
+
 def test_duplicate_announce_added_once():
     asyncio.run(_dedupe())
 

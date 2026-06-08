@@ -15,6 +15,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+from p2pearl.consensus.share import ShareBlock  # noqa: E402
 from p2pearl.consensus.sharechain import GENESIS_PREV, Sharechain  # noqa: E402
 from p2pearl.daemon import ParentTemplate, PoolNode, serialize_payouts  # noqa: E402
 from p2pearl.stratum.server import StratumJob, StratumServer, Submission  # noqa: E402
@@ -161,6 +162,136 @@ async def _block_flow():
     assert res.accepted
     assert sblock.calls and sblock.calls[0][0] == "DEADBEEF"   # submitblock got the assembled hex
     assert len(bblock.calls) == 1
+
+
+def test_handle_submit_block_flood_deduped_and_hooks():
+    asyncio.run(_flood_flow())
+
+
+async def _flood_flow():
+    # A fast GPU on an easy share target can land many block-clearing shares for the
+    # SAME parent tip. The node must ZK-prove + submitblock ONCE (not stack N x the
+    # ~seconds-long prove and miss the orphan window), run the pre/post hooks around
+    # that one prove, yet still record every valid share. A new parent re-arms it.
+    sc = Sharechain(window=10)
+    assembled = []
+    pre, post, sblock, bblock = _Rec(), _Rec(), _Rec(), _Rec()
+
+    def assemble(ctx, proof):          # sync, like the production adapter
+        assembled.append(proof)
+        return "DEADBEEF"
+
+    node = PoolNode(
+        sharechain=sc, share_target=SHARE_TARGET, make_header=_fake_make_header,
+        verify_share=(lambda *a: True), verify_block=(lambda *a: True),
+        assemble_block=assemble, submit_block=sblock, broadcast_block=bblock,
+        pre_assemble=pre, post_assemble=post)
+    node.set_template(TEMPLATE)
+
+    for addr, jid in ((ADDR_A, "j1"), (ADDR_B, "j2")):       # two block-clearing shares, same parent
+        header_hex, target, height, ctx = node.build_job_for(addr)
+        res = await node.handle_submit(Submission(addr, "rig", StratumJob(jid, header_hex, target, height, ctx), PROOF_B64))
+        assert res.accepted
+
+    assert len(assembled) == 1                               # proved exactly once
+    assert len(sblock.calls) == 1 and sblock.calls[0][0] == "DEADBEEF"
+    assert len(bblock.calls) == 1                            # block gossiped once
+    assert len(pre.calls) == 1 and len(post.calls) == 1      # hooks ran around the one prove
+    assert len(sc) == 2                                      # both shares still recorded
+
+    node.set_template(ParentTemplate(                        # a NEW parent tip re-arms assembly
+        height=1001, prev_block=b"\x33" * 32, bits=TEMPLATE.bits,
+        curtime=TEMPLATE.curtime, coinbase_value=TEMPLATE.coinbase_value))
+    header_hex, target, height, ctx = node.build_job_for(ADDR_A)
+    assert (await node.handle_submit(Submission(ADDR_A, "rig", StratumJob("j3", header_hex, target, height, ctx), PROOF_B64))).accepted
+    assert len(assembled) == 2
+
+
+# --------------------------------------------------------------------------- #
+# Unit: collaborative submission (any node submits a peer's block-clearing share)
+# --------------------------------------------------------------------------- #
+
+def _gossip_share(parent_prev=TEMPLATE.prev_block, height=0, prev=GENESIS_PREV, addr=ADDR_B):
+    return ShareBlock(
+        version=2, sidechain_height=height, prev_share_id=prev,
+        parent_prev_block=parent_prev, parent_height=TEMPLATE.height, timestamp=TEMPLATE.curtime,
+        share_target=SHARE_TARGET, block_nbits=TEMPLATE.bits, coinbase_version=TEMPLATE.version,
+        coinbase_value=TEMPLATE.coinbase_value, miner_address=addr, payout_set_hash=b"\x00" * 32)
+
+
+def _collab_node(sc, assembled, sblock, verify_block=True):
+    def assemble(ctx, proof):
+        assembled.append(proof)
+        return "CAFE"
+    # reconstruct(share) -> (header_bytes, header_ctx); real wiring rebuilds via PPLNS
+    def mk(share):
+        return (b"\x01" * 76, {"sid": share.share_id()})
+    return PoolNode(
+        sharechain=sc, share_target=SHARE_TARGET, make_header=_fake_make_header,
+        verify_share=(lambda *a: True), verify_block=(lambda *a: verify_block),
+        assemble_block=assemble, submit_block=sblock, make_header_from_share=mk)
+
+
+def test_collaborative_submit_block():
+    asyncio.run(_collab_ok())
+
+
+async def _collab_ok():
+    # A peer's gossiped share that also clears the block target for OUR current tip ->
+    # we assemble + submit it (same feeless payout, so it's the pool's block either way).
+    sc = Sharechain(window=10)
+    assembled, sblock = [], _Rec()
+    node = _collab_node(sc, assembled, sblock)
+    node.set_template(TEMPLATE)
+    await node.try_collaborative_submit(_gossip_share(), PROOF_B64)
+    assert assembled == [PROOF_B64]
+    assert sblock.calls and sblock.calls[0][0] == "CAFE"
+
+
+def test_collaborative_submit_skips_stale_parent():
+    asyncio.run(_collab_stale())
+
+
+async def _collab_stale():
+    # A share whose parent is NOT our current Pearl tip is stale -> never prove it.
+    sc = Sharechain(window=10)
+    assembled, sblock = [], _Rec()
+    node = _collab_node(sc, assembled, sblock)
+    node.set_template(TEMPLATE)
+    await node.try_collaborative_submit(_gossip_share(parent_prev=b"\x99" * 32), PROOF_B64)
+    assert assembled == [] and not sblock.calls
+
+
+def test_collaborative_submit_not_a_block_skips():
+    asyncio.run(_collab_not_block())
+
+
+async def _collab_not_block():
+    # Clears the share target (it's a valid share) but NOT the block target -> no submit.
+    sc = Sharechain(window=10)
+    assembled, sblock = [], _Rec()
+    node = _collab_node(sc, assembled, sblock, verify_block=False)
+    node.set_template(TEMPLATE)
+    await node.try_collaborative_submit(_gossip_share(), PROOF_B64)
+    assert assembled == [] and not sblock.calls
+
+
+def test_collaborative_submit_deduped_with_own_block():
+    asyncio.run(_collab_dedup())
+
+
+async def _collab_dedup():
+    # Our own miner already proved+submitted this tip's block; a peer's block-clearing share
+    # for the SAME parent must NOT trigger a second prove (shared per-parent dedup).
+    sc = Sharechain(window=10)
+    assembled, sblock = [], _Rec()
+    node = _collab_node(sc, assembled, sblock)
+    node.set_template(TEMPLATE)
+    header_hex, target, height, ctx = node.build_job_for(ADDR_A)
+    await node.handle_submit(Submission(ADDR_A, "rigA", StratumJob("j", header_hex, target, height, ctx), PROOF_B64))
+    assert len(assembled) == 1
+    await node.try_collaborative_submit(_gossip_share(), PROOF_B64)
+    assert len(assembled) == 1                       # deduped: no second prove
 
 
 def test_handle_submit_rejects_bad_share():

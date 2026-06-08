@@ -45,6 +45,11 @@ def main(argv: list[str] | None = None) -> int:
     dp.add_argument("--peer", action="append", metavar="HOST:PORT",
                     help="connect to a peer node for share gossip (repeatable)")
     dp.add_argument("--share-target", help="sidechain share target as int/hex (default: built-in placeholder)")
+    dp.add_argument("--pause-cmd", metavar="CMD",
+                    help="shell command run just before the ZK prove of a found block "
+                         "(e.g. pause a co-located CPU miner so the prove runs contention-free)")
+    dp.add_argument("--resume-cmd", metavar="CMD",
+                    help="shell command run right after the prove (undoes --pause-cmd)")
 
     args = parser.parse_args(argv)
     standalone = _double_clicked()
@@ -75,7 +80,8 @@ def main(argv: list[str] | None = None) -> int:
                 node=node_cfg, stratum_host=args.stratum_host, stratum_port=args.stratum_port,
                 p2p_host=args.p2p_host, p2p_port=args.p2p_port, peers=tuple(peers))
             st = int(args.share_target, 0) if args.share_target else None
-            return daemon.main(cfg=dcfg, share_target=st)
+            return daemon.main(cfg=dcfg, share_target=st,
+                               pause_cmd=args.pause_cmd, resume_cmd=args.resume_cmd)
         parser.print_help()
         return 0
     finally:

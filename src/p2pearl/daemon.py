@@ -22,6 +22,7 @@ Flow:
 from __future__ import annotations
 
 import asyncio
+import os
 import struct
 import sys
 from collections.abc import Awaitable, Callable
@@ -85,6 +86,8 @@ VerifyBlock = Callable[[bytes, str], bool]
 SubmitBlock = Callable[[str], Awaitable[Any]]
 BroadcastShare = Callable[[ShareBlock, str], Awaitable[None]]
 BroadcastBlock = Callable[[str], Awaitable[None]]
+AssembleHook = Callable[[], Awaitable[None]]   # run around block assembly (e.g. pause co-located load)
+MakeHeaderFromShare = Callable[[ShareBlock], "tuple[bytes, dict] | None"]   # rebuild a gossiped share's block
 
 
 @dataclass
@@ -108,6 +111,9 @@ class PoolNode:
         stratum: StratumServer | None = None,
         broadcast_share: BroadcastShare | None = None,
         broadcast_block: BroadcastBlock | None = None,
+        pre_assemble: AssembleHook | None = None,
+        post_assemble: AssembleHook | None = None,
+        make_header_from_share: MakeHeaderFromShare | None = None,
         min_payout_grains: int = config.MIN_PAYOUT_GRAINS,
     ) -> None:
         self.sharechain = sharechain
@@ -120,12 +126,24 @@ class PoolNode:
         self.stratum = stratum
         self._broadcast_share = broadcast_share
         self._broadcast_block = broadcast_block
+        self._pre_assemble = pre_assemble
+        self._post_assemble = post_assemble
+        self._make_header_from_share = make_header_from_share
         self._min_payout = min_payout_grains
         self._template: ParentTemplate | None = None
+        # Block-assembly is the ZK prover — seconds of CPU on the critical find->submit
+        # path. Serialize it (one prove at a time; concurrent proves only fight for the
+        # same cores) and DEDUP per parent tip so a flood of block-clearing shares can't
+        # stack N x the prove time. Reset when the parent advances (set_template).
+        self._assemble_lock = asyncio.Lock()
+        self._assembled_parents: set[bytes] = set()
         if stratum is not None:
             stratum.set_job_builder(self.build_job_for)
 
     def set_template(self, template: ParentTemplate) -> None:
+        prev = self._template.prev_block if self._template is not None else None
+        if template.prev_block != prev:
+            self._assembled_parents.clear()   # new parent tip -> a fresh block race
         self._template = template
 
     # --- job building (called per-connection by the stratum) ---------------- #
@@ -188,17 +206,70 @@ class PoolNode:
             await self._broadcast_share(ctx.candidate, submission.plain_proof_b64)
 
         # 4. Block-found path: confirm at the BLOCK target with the UNMODIFIED verifier,
-        #    then assemble the full Pearl block, submit it, and gossip it.
+        #    then assemble (ZK-prove) the full Pearl block, submit it, and gossip it.
         if self._verify_block(header_bytes, submission.plain_proof_b64):
-            block_hex = self._assemble_block(ctx.header_ctx, submission.plain_proof_b64)
-            await self._submit_block(block_hex)
-            if self._broadcast_block is not None:
-                await self._broadcast_block(block_hex)
+            await self._assemble_and_submit(ctx, submission.plain_proof_b64)
 
         # 5. New sidechain tip -> rebuild every miner's job (new prev_share + PPLNS).
         if self.stratum is not None:
             await self.stratum.refresh()
         return SubmitResult(True)
+
+    async def _assemble_and_submit(self, ctx: _JobContext, plain_proof_b64: str) -> None:
+        """ZK-prove + submit the found Pearl block — the orphan-critical step.
+
+        The ZK prover IS the whole find-block -> submit latency (seconds of CPU). To
+        keep that window as small as possible and the node healthy while it runs:
+          * prove in a worker thread so the event loop keeps serving miners and
+            gossiping (a frozen node can't even read the next share);
+          * hold ``_assemble_lock`` so only one prove runs at a time (two concurrent
+            proves just halve each other's cores) and DEDUP by parent tip, so a fast
+            GPU on an easy share target that lands many block-clearing shares for the
+            same parent proves+submits ONCE instead of stacking N x the prove time;
+          * run optional pre/post hooks around the prove (e.g. pause co-located CPU
+            mining) for a contention-free, faster proof.
+        """
+        parent = ctx.candidate.parent_prev_block
+        async with self._assemble_lock:
+            if parent in self._assembled_parents:
+                return                                   # already proved this tip's block
+            if self._pre_assemble is not None:
+                await self._pre_assemble()
+            try:
+                block_hex = await asyncio.to_thread(
+                    self._assemble_block, ctx.header_ctx, plain_proof_b64)
+            finally:
+                if self._post_assemble is not None:
+                    await self._post_assemble()
+            await self._submit_block(block_hex)
+            self._assembled_parents.add(parent)          # mark done only on success
+            if self._broadcast_block is not None:
+                await self._broadcast_block(block_hex)
+
+    async def try_collaborative_submit(self, share: ShareBlock, proof_b64: str) -> None:
+        """A peer gossiped a share we verified at the SHARE target; if it ALSO clears the
+        BLOCK target for our CURRENT parent tip, race to assemble + submit it.
+
+        The coinbase pays the same deterministic PPLNS set no matter who submits (feeless,
+        no operator), so the fastest node in the pool can win a block found by ANY node —
+        capping pool-wide orphan risk at the fastest prover's time, not each finder's. Reuses
+        ``_assemble_and_submit`` (one prove at a time, deduped per parent — so this and our
+        own miner's submit can't double-prove the same tip). Stale shares (a parent that is
+        no longer our Pearl tip) are skipped before any expensive prove.
+        """
+        if self._make_header_from_share is None:
+            return
+        template = self._template
+        if template is None or share.parent_prev_block != template.prev_block:
+            return                                       # not our current Pearl tip -> stale
+        built = self._make_header_from_share(share)
+        if built is None:
+            return                                       # forged payout set (already rejected upstream)
+        header_bytes, header_ctx = built
+        if not self._verify_block(header_bytes, proof_b64):
+            return                                       # clears share target but not the block target
+        ctx = _JobContext(candidate=share, header_ctx=header_ctx, payouts=[])
+        await self._assemble_and_submit(ctx, proof_b64)
 
     # --- production poll loop ---------------------------------------------- #
     async def run(self, node: Any, poll_interval: float = 2.0) -> None:
@@ -293,32 +364,118 @@ def _tx_merkle_root(txids_hex: list[str]) -> bytes:
     return level[0][::-1]  # back to big-endian
 
 
-def _make_verify_incoming(sharechain: Sharechain, min_payout: int):
-    """Build the production P2P ``verify_incoming(share, proof_b64) -> bool``.
-
-    Trustless: recompute the deterministic PPLNS payouts as of the share's parent from
-    OUR OWN sharechain, confirm the share commits to exactly that set (``payout_set_hash``
-    — so a peer cannot forge the reward split), reconstruct the EXACT header the finder
-    mined (the shared deterministic builder), and verify the proof at the share target.
-    REQUIRES bitcoinutils + pearl_mining (lazy). The unit-tested P2P layer injects a fake.
+def _reconstruct_share(sharechain: Sharechain, min_payout: int, share: ShareBlock):
+    """Trustlessly rebuild what a gossiped share's PoW commits to, from OUR OWN sharechain:
+    recompute the deterministic PPLNS payouts as of the share's parent, confirm the share
+    commits to exactly that set (``payout_set_hash`` — a peer can't forge the reward split),
+    and reconstruct the byte-identical header + coinbase. Returns ``(header, coinbase_tx,
+    payouts)`` or ``None`` if the payout set doesn't match. REQUIRES bitcoinutils + pearl_mining.
     """
+    weights = sharechain.pplns_weights(share.prev_share_id)
+    payouts = compute_pplns_payouts(share.coinbase_value, weights, min_payout)
+    if double_sha256(serialize_payouts(payouts)) != share.payout_set_hash:
+        return None  # coinbase doesn't pay the deterministic PPLNS set
+    header, coinbase_tx = _build_share_header(
+        share.coinbase_version, share.parent_prev_block, share.timestamp,
+        share.block_nbits, payouts, share.share_id(), share.coinbase_value,
+        share.parent_height)
+    return header, coinbase_tx, payouts
+
+
+def _make_verify_incoming(sharechain: Sharechain, min_payout: int):
+    """Build the production P2P ``verify_incoming(share, proof_b64) -> bool`` — reconstruct
+    the exact header the finder mined and verify the proof at the SHARE target. The
+    unit-tested P2P layer injects a fake."""
     from .pow.verify import verify_share
 
     def verify_incoming(share: ShareBlock, proof_b64: str) -> bool:
-        weights = sharechain.pplns_weights(share.prev_share_id)
-        payouts = compute_pplns_payouts(share.coinbase_value, weights, min_payout)
-        if double_sha256(serialize_payouts(payouts)) != share.payout_set_hash:
-            return False  # coinbase doesn't pay the deterministic PPLNS set
-        header, _cb = _build_share_header(
-            share.coinbase_version, share.parent_prev_block, share.timestamp,
-            share.block_nbits, payouts, share.share_id(), share.coinbase_value,
-            share.parent_height)
+        recon = _reconstruct_share(sharechain, min_payout, share)
+        if recon is None:
+            return False
+        header, _cb, _payouts = recon
         return verify_share(bytes(header.to_bytes()), proof_b64, target_to_bits(share.share_target))
 
     return verify_incoming
 
 
-def build_production_node(cfg: config.DaemonConfig | None = None, share_target: int | None = None) -> "tuple[PoolNode, Any]":
+def _make_header_from_share(sharechain: Sharechain, min_payout: int):
+    """Build ``reconstruct(share) -> (header_bytes, header_ctx) | None`` for collaborative
+    block submission: rebuild the byte-identical header + coinbase a gossiped block-clearing
+    share commits to, so ANY node can assemble + submit that block. The header_ctx matches
+    what ``_production_assemble_block`` consumes (header + coinbase_tx + empty tx list)."""
+    def reconstruct(share: ShareBlock):
+        recon = _reconstruct_share(sharechain, min_payout, share)
+        if recon is None:
+            return None
+        header, coinbase_tx, _payouts = recon
+        header_ctx = {"header": header, "coinbase_tx": coinbase_tx, "transactions": []}
+        return bytes(header.to_bytes()), header_ctx
+
+    return reconstruct
+
+
+def _ensure_prover_env() -> None:
+    """Tune the ZK prover's native runtime BEFORE ``pearl_mining`` is first imported —
+    both rayon and jemalloc read their config when the ``.so`` initializes, so this MUST
+    run before the first import/prove (``build_production_node`` is well before it).
+
+    * ``RAYON_NUM_THREADS`` — pin the prover's rayon pool. Leaving it UNSET makes a
+      found-block proof ~2x slower under load (≈17.5s vs ≈10s on a 16C/32T box); proving
+      plateaus at the physical core count, so the logical-CPU count is a safe ceiling.
+    * ``_RJEM_MALLOC_CONF=background_thread:true`` — move jemalloc's page purging onto a
+      background thread so its ``madvise()`` churn doesn't block the proving threads
+      (~3% faster, measured). tikv-jemalloc reads the ``_rjem_``-prefixed var (NOT plain
+      ``MALLOC_CONF``). We deliberately keep default decay — ``dirty_decay_ms:-1``
+      (never purge) is faster still but OOMs a memory-constrained node.
+
+    Operators may override either by exporting it themselves (honored via ``setdefault``).
+    """
+    os.environ.setdefault("RAYON_NUM_THREADS", str(os.cpu_count() or 1))
+    os.environ.setdefault("_RJEM_MALLOC_CONF", "background_thread:true")
+
+
+HOOK_TIMEOUT_SECONDS = 10.0   # a found block must NEVER wait forever on a hook
+
+
+def _shell_hook(cmd: str | None) -> "AssembleHook | None":
+    """Wrap a shell command as an async block-assembly hook, or ``None`` if no command.
+
+    Used to pause/resume co-located CPU load (e.g. an XMR miner on the same box) around
+    the ~seconds-long ZK prove: a contention-free machine proves several times faster
+    (measured ≈9.7s -> ≈3.3s when a co-located RandomX miner is paused).
+
+    Hardened so a found block can never be lost to a bad hook:
+      * bounded by ``HOOK_TIMEOUT_SECONDS`` (then kill the subprocess and continue);
+      * any failure is logged, never raised into the block path.
+    NB: match the target by *name*, e.g. ``pkill -STOP -x xmrig`` — a ``pgrep -f``
+    pattern also matches the hook's own ``sh -c`` process (its cmdline contains the
+    pattern), which SIGSTOPs the hook itself and would hang it (caught by the timeout).
+    """
+    if not cmd:
+        return None
+
+    async def _run() -> None:
+        proc = None
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            await asyncio.wait_for(proc.wait(), timeout=HOOK_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            print(f"  assemble hook timed out after {HOOK_TIMEOUT_SECONDS:.0f}s ({cmd!r}); "
+                  f"continuing (a found block must not wait on a hook)", flush=True)
+            if proc is not None:
+                try:
+                    proc.kill()
+                except ProcessLookupError:  # pragma: no cover
+                    pass
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"  assemble hook failed ({cmd!r}): {exc}", flush=True)
+
+    return _run
+
+
+def build_production_node(cfg: config.DaemonConfig | None = None, share_target: int | None = None,
+                          pause_cmd: str | None = None, resume_cmd: str | None = None) -> "tuple[PoolNode, Any]":
     """Wire a PoolNode with the real node RPC + verifiers + assembly adapters.
 
     ``share_target`` defaults to a placeholder that MUST be calibrated to live pool
@@ -328,6 +485,7 @@ def build_production_node(cfg: config.DaemonConfig | None = None, share_target: 
     from .pow.verify import verify_block_solution, verify_share
     from .stratum.server import StratumServer
 
+    _ensure_prover_env()                    # tune rayon + jemalloc BEFORE the first prove
     cfg = cfg or config.DaemonConfig()
     node = NodeRPC(cfg.node)
     sharechain = Sharechain()
@@ -345,6 +503,8 @@ def build_production_node(cfg: config.DaemonConfig | None = None, share_target: 
         verify_block=verify_block_solution,
         assemble_block=_production_assemble_block,
         submit_block=submit_block,
+        pre_assemble=_shell_hook(pause_cmd),     # e.g. pause a co-located XMR miner
+        post_assemble=_shell_hook(resume_cmd),   # ...and resume it after the prove
     )
     # Miner-facing stratum: each connecting miner gets its OWN job (its own PPLNS
     # coinbase). build_job_for is the per-connection job source; handle_submit grades
@@ -352,6 +512,10 @@ def build_production_node(cfg: config.DaemonConfig | None = None, share_target: 
     stratum = StratumServer(pool.handle_submit, host=cfg.stratum_host, port=cfg.stratum_port)
     pool.stratum = stratum
     stratum.set_job_builder(pool.build_job_for)
+
+    # Collaborative submission: rebuild the block a gossiped block-clearing share commits
+    # to, so any node can win a block found by a slower peer (same feeless PPLNS payout).
+    pool._make_header_from_share = _make_header_from_share(sharechain, pool._min_payout)
 
     # P2P gossip: shares/blocks propagate to peers; an incoming share is VERIFIED by
     # reconstructing its header (the same deterministic build the finder used) before
@@ -362,7 +526,8 @@ def build_production_node(cfg: config.DaemonConfig | None = None, share_target: 
     p2p = P2PNode(
         sharechain=sharechain,
         verify_incoming=_make_verify_incoming(sharechain, pool._min_payout),
-        host=cfg.p2p_host, port=cfg.p2p_port, on_new_share=_on_new_share)
+        host=cfg.p2p_host, port=cfg.p2p_port, on_new_share=_on_new_share,
+        on_block_candidate=pool.try_collaborative_submit)   # race to submit peers' block-clearing shares
     pool._broadcast_share = p2p.broadcast_share
     pool._broadcast_block = p2p.broadcast_block
     pool.p2p = p2p
@@ -377,6 +542,11 @@ async def _serve(pool: "PoolNode", node: Any, peers=()) -> None:
     """
     gbt = await asyncio.to_thread(node.get_block_template)
     pool.set_template(ParentTemplate.from_gbt(gbt))
+    # Un-strand a co-located miner a PRIOR instance may have left paused: the pause/resume
+    # around a prove is balanced (finally block), but a crash/restart/SIGKILL mid-prove can
+    # skip the resume. Running it once at startup self-heals that. Safe no-op otherwise.
+    if pool._post_assemble is not None:
+        await pool._post_assemble()
     await pool.stratum.start()
     if getattr(pool, "p2p", None) is not None:
         await pool.p2p.start()
@@ -386,6 +556,9 @@ async def _serve(pool: "PoolNode", node: Any, peers=()) -> None:
             except Exception as exc:
                 print(f"  p2p peer    : could not connect {host}:{port}: {exc}", flush=True)
         print(f"  p2p         : {pool.p2p.host}:{pool.p2p.port}  ({pool.p2p.peer_count} peer(s) connected)", flush=True)
+    print(f"  prover      : RAYON_NUM_THREADS={os.environ.get('RAYON_NUM_THREADS')}"
+          f"  jemalloc={os.environ.get('_RJEM_MALLOC_CONF')}"
+          + ("  + pause-hook during prove" if pool._pre_assemble is not None else ""), flush=True)
     s_host, s_port = pool.stratum.host, pool.stratum.port
     print(f"  stratum     : {s_host}:{s_port}  (point your miners here)", flush=True)
     print(f"  e.g.  SRBMiner-MULTI --algorithm pearlhash --pool {s_host}:{s_port} --wallet <prl1...> --disable-cpu", flush=True)
@@ -393,11 +566,12 @@ async def _serve(pool: "PoolNode", node: Any, peers=()) -> None:
     await asyncio.gather(pool.run(node), pool.stratum.serve_forever())
 
 
-def main(cfg: "config.DaemonConfig | None" = None, share_target: int | None = None) -> int:
+def main(cfg: "config.DaemonConfig | None" = None, share_target: int | None = None,
+         pause_cmd: str | None = None, resume_cmd: str | None = None) -> int:
     cfg = cfg or config.DaemonConfig()
     print(f"P2Pearl v{__version__} daemon")
     try:
-        pool, node = build_production_node(cfg, share_target)
+        pool, node = build_production_node(cfg, share_target, pause_cmd, resume_cmd)
     except Exception as exc:  # pragma: no cover - needs live deps
         print(f"could not wire production node: {exc}")
         print("A live node needs a running pearld + a Linux-built pearl_mining + bitcoinutils.")
