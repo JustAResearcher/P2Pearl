@@ -51,29 +51,34 @@ def verify_share(incomplete_header_bytes: bytes, plain_proof_b64: str, share_nbi
     (~2**19) and grade far too hard - zero shares. Convert a 256-bit share target
     to compact nbits with ``p2pearl.consensus.difficulty.target_to_bits``.
 
-    The Rust verifier supports an nbits override
-    (``check_jackpot_difficulty_with_nbits`` / Go ``VerifyZKCertificateWithNbits``),
-    surfaced to Python as ``pearl_mining.verify_plain_proof_with_nbits``. That
-    binding mirrors ``verify_plain_proof``: it takes a typed
-    ``IncompleteBlockHeader`` plus the share ``nbits`` and returns
-    ``(ok: bool, message: str)``. A rejected proof is ``(False, msg)`` - not an
-    exception - so we unpack and return ``ok``.
+    Upstream pearl merged the nbits override into ``verify_plain_proof`` itself
+    (PR #161: ``verify_plain_proof(header, proof, nbits_override=None)``), so a
+    STOCK pearl checkout needs no patch. Older checkouts expose the same
+    capability as the patched ``verify_plain_proof_with_nbits`` (added by
+    ``tools/apply_m2_binding.py``); both forms return ``(ok: bool, message:
+    str)`` — a rejected proof is ``(False, msg)``, not an exception.
     """
     pm = _pearl_mining()
     proof = pm.PlainProof.from_base64(plain_proof_b64)
-    verify_with_nbits = getattr(pm, "verify_plain_proof_with_nbits", None)
-    if verify_with_nbits is None:
-        raise NotImplementedError(
-            "pearl_mining exposes no nbits-override plain-proof verifier. Expose "
-            "check_jackpot_difficulty_with_nbits through py-pearl-mining so shares "
-            "can be graded at the share target (see ROADMAP M2)."
-        )
     # The binding takes a typed IncompleteBlockHeader, not raw bytes. from_bytes
     # enforces the 76-byte layout and reverses prev_block/merkle_root back to the
     # internal orientation that job_key = blake3(header || config) expects.
     header = pm.IncompleteBlockHeader.from_bytes(incomplete_header_bytes)
-    # Returns (ok, message); a rejected proof is (False, msg). Unpack element [0]
-    # so a falsy result is not masked by tuple-truthiness: bool((False, "...")) is True.
+    native = getattr(pm, "verify_plain_proof", None)
+    if native is not None:
+        try:
+            # Unpack element [0] so a falsy result is not masked by tuple-truthiness.
+            ok, _msg = native(header, proof, nbits_override=share_nbits)
+            return bool(ok)
+        except TypeError:
+            pass  # pre-#161 pearl_mining without the kwarg — try the patched binding
+    verify_with_nbits = getattr(pm, "verify_plain_proof_with_nbits", None)
+    if verify_with_nbits is None:
+        raise NotImplementedError(
+            "this pearl_mining build cannot grade shares at an nbits override: "
+            "update the pearl checkout (verify_plain_proof gained nbits_override "
+            "in PR #161) or apply tools/apply_m2_binding.py and rebuild."
+        )
     ok, _msg = verify_with_nbits(header, proof, share_nbits)
     return bool(ok)
 

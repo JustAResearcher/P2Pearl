@@ -50,16 +50,19 @@ class _FakePlainProof:
 
 
 def _make_fake_module(verify_impl):
-    """Build a stub ``pearl_mining`` module.
+    """Build a stub ``pearl_mining`` mirroring UPSTREAM (post-#161): a single
+    ``verify_plain_proof(header, proof, nbits_override=None)``.
 
-    ``verify_impl`` is bound as ``verify_plain_proof_with_nbits``; pass ``None`` to
-    omit the attribute entirely (exercises the NotImplementedError fallback).
+    ``verify_impl`` takes ``(header, proof, nbits)``; pass ``None`` to omit the
+    function entirely (exercises the NotImplementedError fallback).
     """
     mod = types.ModuleType("pearl_mining")
     mod.IncompleteBlockHeader = _FakeHeader
     mod.PlainProof = _FakePlainProof
     if verify_impl is not None:
-        mod.verify_plain_proof_with_nbits = verify_impl
+        def native(header, proof, nbits_override=None):
+            return verify_impl(header, proof, nbits_override)
+        mod.verify_plain_proof = native
     return mod
 
 
@@ -116,6 +119,27 @@ def test_verify_share_not_implemented_without_binding(monkeypatch):
     verify = _load_verify(monkeypatch, _make_fake_module(None))
     with pytest.raises(NotImplementedError):
         verify.verify_share(HEADER_76, PROOF_B64, 0x1E01FFFF)
+
+
+def test_verify_share_legacy_patched_binding_fallback(monkeypatch):
+    # A pre-#161 pearl_mining: verify_plain_proof has NO nbits_override kwarg
+    # (calling it with one raises TypeError before the body runs), but the
+    # apply_m2_binding patch added verify_plain_proof_with_nbits.
+    calls = {}
+    mod = _make_fake_module(None)
+
+    def old_native(header, proof):
+        raise AssertionError("native path must TypeError on the kwarg, not run")
+
+    def legacy(header, proof, nbits):
+        calls["nbits"] = nbits
+        return (True, "ok")
+
+    mod.verify_plain_proof = old_native
+    mod.verify_plain_proof_with_nbits = legacy
+    verify = _load_verify(monkeypatch, mod)
+    assert verify.verify_share(HEADER_76, PROOF_B64, 0x1E01FFFF) is True
+    assert calls["nbits"] == 0x1E01FFFF
 
 
 def test_verify_share_bad_header_length(monkeypatch):

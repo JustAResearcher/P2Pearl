@@ -3,13 +3,14 @@
 A P2Pearl node connects to your own `pearld` full node, serves a stratum port your
 miners point at, gossips shares with other operators over P2P, and — when it finds a
 block — pays the PPLNS window directly in the coinbase (no operator, no fee). This guide
-builds everything from source on Linux.
+builds everything from source on Linux; **Windows users usually need none of it** — see
+[Windows](#windows-native) below.
 
 > **Why the patch step?** P2Pearl grades *shares* at an easy share target, which needs
-> `pearl_mining.verify_plain_proof_with_nbits`. The Rust verifier already implements the
-> nbits override (`check_jackpot_difficulty_with_nbits`, used by the Go node); it just
-> isn't surfaced to Python upstream. `tools/apply_m2_binding.py` adds that ~40-line
-> additive wrapper to a stock Pearl checkout. See
+> an nbits override on `verify_plain_proof`. Upstream pearl merged exactly that
+> (PR #161: `verify_plain_proof(header, proof, nbits_override=None)`), so on a current
+> checkout `tools/apply_m2_binding.py` detects it and **no-ops** — just build. On an
+> older checkout it adds the equivalent ~40-line additive wrapper. See
 > [`integration/py-pearl-mining-nbits-override.md`](../integration/py-pearl-mining-nbits-override.md).
 
 ## Prerequisites
@@ -65,6 +66,39 @@ Your node now serves miners, gossips shares with peers (each is trustlessly veri
 reconstructing its header), and any block it finds pays every recent contributor across
 the network their share — feeless, no operator. To let others reach you, forward TCP
 `3360` (stratum) and `37900` (P2P) to your node.
+
+## Windows (native)
+
+The whole node stack runs natively on Windows — validated end-to-end (a real block
+built, CPU-mined, and ZK-proved on a Windows machine was accepted by `pearld`).
+
+**The no-build way:** the release [`p2pearl.exe`](https://github.com/JustAResearcher/P2Pearl/releases/latest)
+already bundles `pearl_mining` + the whole coinbase stack. Download it, run it (the
+control panel opens), fill in the RPC fields for your `pearld`, click **Test pearld**,
+then **Start node**. Done.
+
+**From source** (only if you want to build it yourself) — prereqs: Python 3.12+,
+[Rust](https://rustup.rs) with the MSVC toolchain, git:
+
+```powershell
+git clone https://github.com/pearl-research-labs/pearl
+git clone https://github.com/JustAResearcher/P2Pearl
+python P2Pearl\tools\apply_m2_binding.py pearl     # no-ops on current pearl (PR #161)
+python -m venv venv; .\venv\Scripts\Activate.ps1
+pip install maturin
+cd pearl\py-pearl-mining; maturin develop --release; cd ..\..
+pip install -e P2Pearl bitcoin-utils numpy
+$env:PYTHONPATH = "$PWD\pearl\miner\pearl-gateway\src"
+p2pearl gui        # or: p2pearl daemon --rpc-url http://<pearld-host>:44109 ...
+```
+
+**Where does `pearld` run?** Anywhere your Windows box can reach over RPC:
+
+- **Another machine** — point `--rpc-url` at it (and set that `pearld`'s `rpclisten`
+  to an address your box can reach; keep RPC off the public internet).
+- **WSL on the same machine** — build/run `pearld` inside WSL per the Linux steps
+  above; Windows reaches it at `http://127.0.0.1:44109` automatically.
+- A *native Windows* `pearld` build is untested (CGO toolchain); use one of the above.
 
 ## Prover speed — avoiding orphaned blocks
 

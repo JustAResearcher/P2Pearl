@@ -84,6 +84,15 @@ def main() -> int:
             print(f"!! not a Pearl checkout (missing {p.relative_to(root)}): {root}")
             return 2
 
+    # Upstream merged the override into verify_plain_proof itself (PR #161:
+    # `nbits_override=None` kwarg). On such checkouts there is nothing to patch —
+    # P2Pearl uses the native kwarg directly.
+    if "nbits_override" in lib_rs.read_text(encoding="utf-8"):
+        print("upstream already supports nbits_override (pearl PR #161) — nothing to patch.")
+        print("Build it as-is:")
+        print(f"  cd {root / 'py-pearl-mining'} && maturin develop --release")
+        return 0
+
     # 1) zk-pow verify.rs — add the pub fn just before the existing verify_plain_proof.
     src = verify_rs.read_text(encoding="utf-8")
     if "fn verify_plain_proof_with_nbits" in src:

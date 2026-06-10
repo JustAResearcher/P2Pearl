@@ -38,9 +38,12 @@ That's it. There is no account and no balance page: **when the pool finds a bloc
 
 A pool node is the thing miners point at. You can run one for yourself, your friends, or the whole network — it pays you nothing extra (that's the point: 0 % fee), but it makes the pool exist.
 
-**You need:** a Linux machine, your own Pearl full node (`pearld`), and a one-time build of Pearl's proof verifier. The complete copy-paste walkthrough is **[`docs/running-a-node.md`](docs/running-a-node.md)** — about 15 minutes of mostly waiting for builds.
+**You need:** a Pearl full node (`pearld`) your machine can talk to, plus:
 
-Once that's done, configuration is the easy part — open the control panel (`p2pearl gui`):
+- **Windows — nothing to build.** `p2pearl.exe` has the entire node inside (validated end-to-end: a block built and ZK-proved on Windows was accepted by `pearld`). If you don't have a `pearld` yet, run one in WSL or on any machine you can reach — [`docs/running-a-node.md`](docs/running-a-node.md#windows-native) has the options.
+- **Linux** — a one-time ~15-minute build of Pearl's proof verifier: the copy-paste walkthrough is [`docs/running-a-node.md`](docs/running-a-node.md).
+
+Then configuration is the easy part — open the control panel (double-click the exe, or `p2pearl gui`):
 
 1. Fill in **RPC URL / user / password** (how to reach your `pearld`).
 2. Click **Test pearld** — it tells you if the connection works.
@@ -75,7 +78,7 @@ Everything below is reference material — you don't need it to use P2Pearl.
 
 ## Configuration reference
 
-**The easy way is the GUI** (`p2pearl gui`): it covers every setting below (rare ones behind the *Advanced* toggle), persists them to `~/.p2pearl/gui.json`, tests your pearld connection, and starts/stops the daemon with a live log. It is a thin wrapper — it launches `p2pearl daemon` with exactly the flags documented here. A *live* node additionally needs the `pearl_mining` build from [`docs/running-a-node.md`](docs/running-a-node.md) (Linux); without it, Start tells you exactly what's missing, and the demo runs anywhere.
+**The easy way is the GUI** (`p2pearl gui`): it covers every setting below (rare ones behind the *Advanced* toggle), persists them to `~/.p2pearl/gui.json`, tests your pearld connection, and starts/stops the daemon with a live log. It is a thin wrapper — it launches `p2pearl daemon` with exactly the flags documented here. The release `p2pearl.exe` bundles the native proof stack, so a Windows node is download-and-run; a *source* install needs the `pearl_mining` build from [`docs/running-a-node.md`](docs/running-a-node.md) (without it, Start tells you exactly what's missing, and the demo runs anywhere).
 
 For the daemon itself there is **no config file** — it is configured entirely by command-line flags and a few environment variables; the *sidechain consensus* lives in code (`src/p2pearl/config.py`) and must be identical on every node.
 
