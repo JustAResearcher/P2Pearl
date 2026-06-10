@@ -28,7 +28,7 @@ else:
 # can then run + sync it for the user ("Run pearld for me").
 _pearld_bin = os.environ.get('PEARLD_BIN_DIR')
 if _pearld_bin:
-    for f in ('pearld.exe', 'prlctl.exe', 'pearld', 'prlctl', 'LICENSE'):
+    for f in ('pearld.exe', 'prlctl.exe', 'pearld', 'prlctl', 'LICENSE', 'sample-pearld.conf'):
         p = os.path.join(_pearld_bin, f)
         if os.path.exists(p):
             datas.append((p, 'pearld_bin'))

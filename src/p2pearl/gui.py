@@ -168,6 +168,9 @@ def pearld_args(exe: Path, settings: dict, datadir: Path = PEARLD_DATA_DIR) -> l
         f"--rpclisten=127.0.0.1:{net['rpc_port']}",
         f"--datadir={datadir}",
         f"--logdir={datadir / 'logs'}",
+        # Outbound-only: a MANAGED node must never die on a chain-P2P port clash
+        # (e.g. another pearld on the same box); outbound peers fully sync it.
+        "--nolisten",
     ]
     if net["flag"]:
         args.append(net["flag"])
@@ -469,24 +472,36 @@ def main() -> int:
         log(f"--- pearld started (pid {proc.pid}, {s['network']}) ---")
         log(f"    binaries : {exe.parent}")
         log(f"    chain data + logs: {PEARLD_DATA_DIR}")
+        _start_watcher(s)
+        return True
+
+    def _start_watcher(s: dict) -> None:
+        if state["watch_stop"] is not None:
+            state["watch_stop"].set()            # retire any previous watcher
         stop_ev = threading.Event()
         state["watch_stop"] = stop_ev
         threading.Thread(target=watch_pearld_sync, args=(s, stop_ev, events.put),
                          daemon=True).start()
-        return True
 
     def start_node():
         s = current_settings()
         if manage_var.get() and not state["pearld_ready"]:
             save_settings(s)
-            pp = state["pearld_proc"]
-            if pp is None or pp.poll() is not None:
-                if not start_pearld(s):
-                    return
-            status_var.set("waiting for pearld to sync ...")
             state["pending_node_start"] = True
             start_btn["state"] = "disabled"
-            return                               # the node starts on ("pearld_ready")
+            pp = state["pearld_proc"]
+            if pp is not None and pp.poll() is None:
+                status_var.set("waiting for pearld to sync ...")
+                return                           # already managing one; watcher will fire
+            # Maybe a pearld is ALREADY serving this RPC URL (started by hand or a
+            # previous session) — adopt it instead of colliding with it.
+            status_var.set("checking for an existing pearld ...")
+
+            def probe():
+                events.put(("pearld_probe", test_rpc(s)[0]))
+
+            threading.Thread(target=probe, daemon=True).start()
+            return                               # continues on ("pearld_probe", ok)
         spawn(build_daemon_args(s), "node")
 
     def run_demo():
@@ -560,8 +575,21 @@ def main() -> int:
                     status_var.set("stopped")
                     start_btn["state"] = demo_btn["state"] = "normal"
                     stop_btn["state"] = "disabled"
+                elif ev[0] == "pearld_probe":
+                    if not state["pending_node_start"]:
+                        pass                     # superseded (user changed course)
+                    elif ev[1]:
+                        log("--- a pearld is already serving this RPC URL — using it ---")
+                        status_var.set("waiting for pearld to sync ...")
+                        _start_watcher(current_settings())
+                    elif start_pearld(current_settings()):
+                        status_var.set("waiting for pearld to sync ...")
+                    else:
+                        state["pending_node_start"] = False
+                        start_btn["state"] = "normal"
+                        status_var.set("stopped")
                 elif ev[0] == "pearld_status":
-                    if state["pearld_proc"] is not None:
+                    if state["pearld_proc"] is not None or state["pending_node_start"]:
                         status_var.set(ev[1])
                 elif ev[0] == "pearld_ready":
                     state["pearld_ready"] = True
@@ -583,6 +611,9 @@ def main() -> int:
         if pp is not None and pp.poll() is not None:
             log(f"--- pearld exited (code {pp.returncode}) — see "
                 f"{PEARLD_DATA_DIR / 'pearld-console.log'} ---")
+            log("    hint: if another pearld is already running on this machine, close it —")
+            log("    or untick 'Run pearld for me' and point the RPC URL at it (it must be")
+            log("    started with --rpcuser/--rpcpass for P2Pearl to reach it).")
             state["pearld_proc"] = None
             state["pearld_ready"] = False
             if state["watch_stop"] is not None:

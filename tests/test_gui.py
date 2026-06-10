@@ -74,6 +74,7 @@ def test_pearld_args_networks(tmp_path):
     main_args = pearld_args(exe, dict(s, network="mainnet"), datadir=tmp_path)
     assert "--rpclisten=127.0.0.1:44107" in main_args and "--testnet" not in main_args
     assert "--rpcuser=u" in main_args and "--rpcpass=p" in main_args and "--notls" in main_args
+    assert "--nolisten" in main_args   # a managed node must never die on a P2P port clash
     test_args = pearld_args(exe, dict(s, network="testnet"), datadir=tmp_path)
     assert "--testnet" in test_args and "--rpclisten=127.0.0.1:44109" in test_args
     reg_args = pearld_args(exe, dict(s, network="regtest"), datadir=tmp_path)
