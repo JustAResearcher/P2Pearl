@@ -14,12 +14,12 @@ P2Pearl is a mining pool with **no company behind it**: no operator, no account,
 2. **Double-click it.** The control panel above opens. *(Linux: `chmod +x p2pearl-linux-x86_64 && ./p2pearl-linux-x86_64 gui`)*
 3. Pick your path:
    - 👀 **Just curious?** Click **Run demo (no setup)** and watch two pool nodes find shares, gossip, and split a reward — live, on your machine, nothing to configure.
-   - ⛏️ **Have a GPU? Mine.** [Two steps below.](#-i-want-to-mine)
-   - 🏗️ **Want to host a pool node?** [See below.](#-i-want-to-run-a-pool-node)
+   - ⛏️ **Have a GPU? Mine.** [Two steps below.](#i-want-to-mine)
+   - 🏗️ **Want to host a pool node?** [See below.](#i-want-to-run-a-pool-node)
 
 Your settings are saved automatically, so every launch after the first is open-and-click.
 
-## ⛏️ I want to mine
+## I want to mine
 
 You don't install anything from P2Pearl — your existing miner just points at a P2Pearl node instead of a normal pool:
 
@@ -34,7 +34,7 @@ That's it. There is no account and no balance page: **when the pool finds a bloc
 
 > Tip: anyone running the control panel can hand you the exact command — it's the **"Miners run:"** line at the bottom of the window, with their port and your placeholder pre-filled.
 
-## 🏗️ I want to run a pool node
+## I want to run a pool node
 
 A pool node is the thing miners point at. You can run one for yourself, your friends, or the whole network — it pays you nothing extra (that's the point: 0 % fee), but it makes the pool exist.
 
