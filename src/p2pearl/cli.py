@@ -22,14 +22,20 @@ def _double_clicked() -> bool:
     so we should pause before exit instead of letting the window vanish.
     A PyInstaller onefile exe runs as TWO console processes (bootloader parent +
     this child), so a double-clicked exe sees 2; a shell launch adds the shell on
-    top (3+). Windows-only; any failure falls back to False (normal CLI)."""
+    top (3+). A child spawned with CREATE_NO_WINDOW (e.g. by the GUI) also sees 2
+    but has NO console window — nobody could press Enter there, so it must NOT
+    count as a double-click (it would hang forever on the pause). Windows-only;
+    any failure falls back to False (normal CLI)."""
     if sys.platform != "win32":
         return False
     try:
         import ctypes
 
+        k32 = ctypes.windll.kernel32
+        if not k32.GetConsoleWindow():
+            return False        # hidden/windowless console: not interactive
         buf = (ctypes.c_uint * 16)()
-        count = ctypes.windll.kernel32.GetConsoleProcessList(buf, 16)
+        count = k32.GetConsoleProcessList(buf, 16)
         return count <= (2 if getattr(sys, "frozen", False) else 1)
     except Exception:
         return False

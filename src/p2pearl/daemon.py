@@ -584,8 +584,8 @@ def main(cfg: "config.DaemonConfig | None" = None, share_target: int | None = No
         pool, node = build_production_node(cfg, share_target, pause_cmd, resume_cmd)
     except Exception as exc:  # pragma: no cover - needs live deps
         print(f"could not wire production node: {exc}")
-        print("A live node needs a running pearld + a Linux-built pearl_mining + bitcoinutils.")
-        print("See ROADMAP.md and integration/.")
+        print("This build is missing the native proof stack. The release p2pearl.exe includes")
+        print("it; for a source install, build pearl_mining per docs/running-a-node.md.")
         return 1
     print(f"  parent node : {node._cfg.url if hasattr(node, '_cfg') else '?'}")
     try:
@@ -594,8 +594,10 @@ def main(cfg: "config.DaemonConfig | None" = None, share_target: int | None = No
         return 0
     except Exception as exc:  # pragma: no cover - needs a live pearld
         print(f"\n  could not reach pearld at {node._cfg.url}: {exc}")
-        print("  P2Pearl needs a running Pearl node + a Linux-built pearl_mining to run live.")
-        print("  The test suite and 'p2pearl demo' run with no node. See ROADMAP.md (M6).")
+        print("  Is your Pearl node running? Start pearld first (Windows: pearld.exe from the")
+        print("  release zip; see docs/running-a-node.md), wait for it to sync, and check the")
+        print("  RPC URL/user/password match it. The GUI's 'Test pearld' button checks this.")
+        print("  ('p2pearl demo' runs with no node at all.)")
         return 1
     return 0
 
