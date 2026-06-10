@@ -1,76 +1,81 @@
 # P2Pearl
 
-**A decentralized, zero-fee, P2Pool-style mining pool for [Pearl](https://github.com/pearl-research-labs/pearl) (the Pearlhash proof-of-useful-work coin).**
+**Mine [Pearl](https://github.com/pearl-research-labs/pearl) together. Keep 100 %.**
 
-P2Pearl is to Pearl what [P2Pool](https://github.com/SChernykh/p2pool) is to Monero: a peer-to-peer mining pool with **no operator, no pool wallet, and a 0 % fee**. Miners mine a shared *sharechain*; when the pool finds a real Pearl block, its coinbase pays every recent contributor directly and proportionally, enforced by consensus — there is no one to take a cut, go rogue, or be shut down.
+P2Pearl is a mining pool with **no company behind it**: no operator, no account, no signup, and a **0 % fee**. When the pool finds a block, the block itself pays every recent miner their share, straight to their own wallet. There is nobody to take a cut, run off with funds, or get shut down — the same idea as Monero's P2Pool, built for Pearl.
 
-> **Status (v0.0.12+, 102 tests):** validated live on the **public Pearl testnet** — real canonical blocks mined (heights 37981, 37988, 38108, 38111), including blocks paying **two independent operators'** miners proportionally in a single feeless coinbase. The sidechain now has a **consensus share-difficulty retarget** (every share's target is derived from the chain and enforced by every peer) and **subsidy-exact coinbase validation** (replicates `pearld`'s emission schedule grain-for-grain; verified against a live node). Remaining before a mainnet pool we'd stake real money on: per-miner vardiff, transaction-fee collection, and a longer multi-operator soak. See [`ROADMAP.md`](ROADMAP.md) and the design in [`docs/blueprint.md`](docs/blueprint.md).
+[![release](https://img.shields.io/github/v/release/JustAResearcher/P2Pearl)](https://github.com/JustAResearcher/P2Pearl/releases/latest) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE) ![tests](https://img.shields.io/badge/tests-109%20passing-brightgreen)
+
+<p align="center"><img src="docs/img/gui.png" alt="The P2Pearl control panel" width="640"></p>
+
+## Get started in 2 minutes
+
+1. **Download** the latest release: [`p2pearl.exe`](https://github.com/JustAResearcher/P2Pearl/releases/latest) (Windows) or `p2pearl-linux-x86_64` (Linux).
+2. **Double-click it.** The control panel above opens. *(Linux: `chmod +x p2pearl-linux-x86_64 && ./p2pearl-linux-x86_64 gui`)*
+3. Pick your path:
+   - 👀 **Just curious?** Click **Run demo (no setup)** and watch two pool nodes find shares, gossip, and split a reward — live, on your machine, nothing to configure.
+   - ⛏️ **Have a GPU? Mine.** [Two steps below.](#-i-want-to-mine)
+   - 🏗️ **Want to host a pool node?** [See below.](#-i-want-to-run-a-pool-node)
+
+Your settings are saved automatically, so every launch after the first is open-and-click.
+
+## ⛏️ I want to mine
+
+You don't install anything from P2Pearl — your existing miner just points at a P2Pearl node instead of a normal pool:
+
+1. Get [SRBMiner-Multi](https://github.com/doktor83/SRBMiner-Multi/releases) (the standard Pearlhash miner).
+2. Run it with a P2Pearl node's address and **your own wallet**:
+
+   ```
+   SRBMiner-MULTI --algorithm pearlhash --pool <node-address>:3360 --wallet <your-prl1p...-address> --disable-cpu
+   ```
+
+That's it. There is no account and no balance page: **when the pool finds a block, the block's own coinbase pays you directly**, proportional to the shares you contributed recently. Nothing to claim, nothing to withdraw, no fee taken. (Rewards smaller than 0.001 PRL roll over to the next block — never lost.)
+
+> Tip: anyone running the control panel can hand you the exact command — it's the **"Miners run:"** line at the bottom of the window, with their port and your placeholder pre-filled.
+
+## 🏗️ I want to run a pool node
+
+A pool node is the thing miners point at. You can run one for yourself, your friends, or the whole network — it pays you nothing extra (that's the point: 0 % fee), but it makes the pool exist.
+
+**You need:** a Linux machine, your own Pearl full node (`pearld`), and a one-time build of Pearl's proof verifier. The complete copy-paste walkthrough is **[`docs/running-a-node.md`](docs/running-a-node.md)** — about 15 minutes of mostly waiting for builds.
+
+Once that's done, configuration is the easy part — open the control panel (`p2pearl gui`):
+
+1. Fill in **RPC URL / user / password** (how to reach your `pearld`).
+2. Click **Test pearld** — it tells you if the connection works.
+3. (Optional) Add **Peers** — other operators' addresses, one per line. This merges you into one big shared pool; leave empty to run your own private pool.
+4. Click **▶ Start node.** The live log streams in the window. Copy the **"Miners run:"** command to your miners.
+
+Prefer a terminal or a server? The same thing as one command: `p2pearl daemon --rpc-url ... --peer ...` — every flag is documented in the [configuration reference](#configuration-reference) below, including ready-made systemd units.
+
+## FAQ
+
+**Is there really no fee?** Really. The reward-splitting rule is enforced by every node in the pool — a coinbase that pays anyone an "operator cut" is rejected by consensus. There is no donation address, no dev tax, nothing.
+
+**Where does my money go?** Into the Pearl block itself, addressed directly to your wallet. Look at any block the pool mines: one output per recent miner. No middleman ever holds funds.
+
+**Do I have to trust the node I mine on?** Much less than a normal pool. Payouts are computed deterministically from the shared sharechain and cross-checked by every peer — an operator can't skim or reroute them. (Like any pool, the node you point at could ignore your shares — if you don't like a node, point at another or run your own.)
+
+**Do I need to keep P2Pearl open to mine?** No. Only the node operator runs P2Pearl; miners just run their miner.
+
+**What does the demo do? Is it safe?** It simulates a two-node pool entirely on your machine — no network, no wallet, no real coins. It's there so you can see how everything fits together.
+
+**Mainnet or testnet?** The software has mined real, confirmed blocks on Pearl's **public testnet**, including blocks paying two independent operators' miners in one coinbase. Treat mainnet as early: the remaining hardening items are listed in [Status](#status--how-to-test).
+
+**Where are my settings?** `~/.p2pearl/gui.json` (shown in the log pane). Delete it to reset.
+
+**The window closed instantly / something else is wrong?** See [Troubleshooting](#troubleshooting).
 
 ---
 
-## Choose your path
+# For operators & developers
 
-| You are… | You need | Start here |
-|---|---|---|
-| **Curious** — just want to see it work | nothing (Windows/Linux binary) | [Try it in 60 seconds](#try-it-in-60-seconds) |
-| **A miner** — have a GPU, want to mine feelessly | SRBMiner + a pool node's address | [Mine on a P2Pearl node](#mine-on-a-p2pearl-node-gpu-owners) |
-| **An operator** — want to run a pool node | a Linux box, `pearld`, one build step | [Run a pool node](#run-a-pool-node-operators) + [Configuration reference](#configuration-reference) |
-
----
-
-## Try it in 60 seconds
-
-Download `p2pearl.exe` (Windows) or `p2pearl-linux-x86_64` (Linux) from the [latest release](https://github.com/JustAResearcher/P2Pearl/releases). No Python needed.
-
-- **Double-click `p2pearl.exe`** (or run `p2pearl gui`) and the **control panel** opens: a settings form (pearld RPC, ports, peers, wallet), a **Start node** button, a live log pane, and a copy-paste miner command. Settings persist to `~/.p2pearl/gui.json`, so the next launch is open-and-click. The **Run demo (no setup)** button shows the whole pipeline working — two pool nodes gossiping over real sockets, simulated miners, a feeless PPLNS payout — without a Pearl node.
-- **Linux:** `chmod +x p2pearl-linux-x86_64 && ./p2pearl-linux-x86_64 gui` (or `demo` over SSH/headless).
-- From a terminal: `--version`, `gui`, `demo`, `daemon --help`.
-
-The demo fakes only the GPU cryptography; everything else (stratum, sharechain, PPLNS, P2P verification) is the real code path. From a source checkout the same CLI is `python -m p2pearl`.
-
-## Mine on a P2Pearl node (GPU owners)
-
-You don't run P2Pearl at all — you point your existing Pearlhash miner at someone's P2Pearl node, exactly like any pool:
-
-```bash
-SRBMiner-MULTI --algorithm pearlhash --pool <node-ip>:3360 --wallet <your-prl1p...-address> --disable-cpu
-```
-
-- **Wallet:** a Pearl **P2TR** address — `prl1p…` on mainnet, `tprl1p…` on testnet. The coinbase pays *this address directly on-chain*; there is no pool balance, no withdrawal, no minimum-payout account. (Sub-0.001 PRL dust shares are deferred to a later block, never lost.)
-- **Worker name:** append `.rigname` to the wallet (`prl1p….rig01`) to tell your rigs apart in logs.
-- **Fee: 0 %.** The coinbase splits the entire block reward across the PPLNS window. Nothing else.
-- Share difficulty is set by the node (the sidechain retargets to ~1 share / 10 s pool-wide); your miner just follows the job target like any stratum pool.
-
-## Run a pool node (operators)
-
-A node = your own `pearld` + `p2pearl daemon`. The daemon serves the stratum port miners connect to, gossips shares with peer nodes (each share is trustlessly re-verified), and when the pool finds a block, submits it with the feeless PPLNS coinbase. **[`docs/running-a-node.md`](docs/running-a-node.md) is the complete from-source walkthrough** (clone Pearl → one additive patch → build `pearl_mining` + `pearld` → run). The short version:
-
-```bash
-# one-time build (Linux): see docs/running-a-node.md for the full recipe
-git clone https://github.com/pearl-research-labs/pearl
-git clone https://github.com/JustAResearcher/P2Pearl
-python P2Pearl/tools/apply_m2_binding.py pearl
-python -m venv venv && . venv/bin/activate && pip install maturin
-( cd pearl/py-pearl-mining && maturin develop --release )
-( cd pearl && task build:pearld build:prlctl )
-pip install -e P2Pearl bitcoin-utils numpy
-export PYTHONPATH="$PWD/pearl/miner/pearl-gateway/src:$PYTHONPATH"
-
-# run (testnet shown)
-./pearl/bin/pearld --testnet --notls --rpcuser=u --rpcpass=p --rpclisten=127.0.0.1:44109 &
-p2pearl daemon --rpc-url http://127.0.0.1:44109 --rpc-user u --rpc-pass p \
-               --peer <another-operator>:37900
-```
-
-Then point miners at `<your-ip>:3360`, and forward TCP **3360** + **37900** if you want miners/peers outside your LAN.
-
----
+Everything below is reference material — you don't need it to use P2Pearl.
 
 ## Configuration reference
 
-Everything an operator can configure, in one place.
-
-**The easy way: `p2pearl gui`.** The control panel covers every setting below (the rare ones under an *Advanced* toggle), persists them to `~/.p2pearl/gui.json`, tests your pearld connection, and starts/stops the daemon with a live log. The GUI is a thin wrapper — it launches `p2pearl daemon` with exactly the flags documented here, so everything below applies either way. A *live* node additionally needs the `pearl_mining` build from [`docs/running-a-node.md`](docs/running-a-node.md) (Linux); without it, Start tells you exactly what's missing, and the demo runs anywhere.
+**The easy way is the GUI** (`p2pearl gui`): it covers every setting below (rare ones behind the *Advanced* toggle), persists them to `~/.p2pearl/gui.json`, tests your pearld connection, and starts/stops the daemon with a live log. It is a thin wrapper — it launches `p2pearl daemon` with exactly the flags documented here. A *live* node additionally needs the `pearl_mining` build from [`docs/running-a-node.md`](docs/running-a-node.md) (Linux); without it, Start tells you exactly what's missing, and the demo runs anywhere.
 
 For the daemon itself there is **no config file** — it is configured entirely by command-line flags and a few environment variables; the *sidechain consensus* lives in code (`src/p2pearl/config.py`) and must be identical on every node.
 
@@ -182,17 +187,15 @@ The only latency between *finding* a block and *announcing* it is generating its
 
 | Symptom | Cause / fix |
 |---|---|
-| `could not reach pearld at …` on startup | Wrong `--rpc-url`/credentials, or `pearld` still syncing. Test: `curl -u u:p -d '{"method":"getblocktemplate","params":[]}' http://127.0.0.1:44109/`. |
+| `could not reach pearld at …` on startup | Wrong `--rpc-url`/credentials, or `pearld` still syncing. The GUI's **Test pearld** button checks exactly this. |
 | Miner connects but never gets a job | The daemon primes its first job from `getblocktemplate` — if `pearld` is mid-sync, GBT errors until it reaches the tip. Wait for sync. |
 | Shares rejected: `share does not meet target` | Normal occasionally (the miner raced a retarget/job refresh). Constant rejections → miner is on the wrong algorithm or a stale connection; restart the miner. |
 | Gossiped shares rejected: `bad share target` / `bad coinbase value` | The peer is on different consensus (old version, or a different `--share-target` bootstrap). All nodes must run the same `SIDECHAIN_VERSION` and genesis target. |
 | Peer connect fails | Their `37900` isn't reachable (port-forward/firewall), or version mismatch. Outbound `--peer` needs no forwarding on *your* side. |
 | Block found but not on-chain | Likely orphaned — another miner found the height first while proving. Keep the prover fast (`--pause-cmd`, peers for collaborative submit). |
-| Windows EXE closes instantly | Fixed in v0.0.12 — re-download. |
+| No window opens on Linux | Headless session (SSH) — the binary says so and points you at `p2pearl daemon`. The GUI needs a desktop. |
 
----
-
-## Why this is feasible (and why Pearl is a clean target)
+## How it works (and why Pearl is a clean target)
 
 Pearl is a **btcd/Bitcoin fork** (UTXO chain, `getblocktemplate`, real Bitcoin coinbase, transaction merkle root, `nbits` compact targets) with the Pearlhash proof-of-useful-work bolted on as a **succinct, CPU-verifiable ZK certificate**. That combination is almost ideal for a P2Pool port:
 
@@ -201,12 +204,6 @@ Pearl is a **btcd/Bitcoin fork** (UTXO chain, `getblocktemplate`, real Bitcoin c
 - **Shares verify cheaply.** A peer validates an incoming share with `verify_plain_proof` (CPU, no GEMM recompute) or the ~60 KB recursive-plonky2 ZK certificate (~ms, size-independent), and every proof is cryptographically bound to its exact coinbase/payout set (no replay).
 
 The one genuinely Pearl-specific constraint is **share/proof size on the wire** (60 KB–370 KB per share vs. a few hundred bytes in BTC/XMR P2Pool); the network design is shaped around it (per-pool difficulty caps gossip to ~1 share / share-time globally; prune to the PPLNS window; fetch proofs on demand).
-
-## Why Python
-
-The entire reusable surface from the Pearl repo is Python: the gateway's `getblocktemplate` -> coinbase -> `submitblock` path, the `pearl-stratum-srv` stratum server + PPLNS split, and the `pearl_mining` (PyO3) verification bindings (`verify_plain_proof` / `verify_proof` / `generate_proof`). The original Bitcoin P2Pool was also Python. Share throughput is low (~1 share / 10 s globally), so Python is fine for the sidechain/P2P layer; the perf-critical proof verification already lives in compiled Rust behind `pearl_mining`. A native core can be swapped in later if needed.
-
-## Architecture
 
 ```
            +---------------------------------------------------------+
@@ -224,7 +221,7 @@ The entire reusable surface from the Pearl repo is Python: the gateway's `getblo
 
 > **Decentralization:** nodes form one shared pool by **gossiping shares over P2P** (`--peer`). Each incoming share is **trustlessly verified** — a peer recomputes the deterministic PPLNS payouts from its *own* sharechain, confirms the share commits to exactly that set, reconstructs the byte-identical header, verifies the proof at the consensus share target, and checks the coinbase value against Pearl's emission schedule. A finder can forge neither the PoW, the reward split, the difficulty, nor the pot size. Validated end-to-end on the public testnet with independent operators.
 
-See [`docs/blueprint.md`](docs/blueprint.md) for the full, source-grounded design.
+**Why Python?** The entire reusable surface from the Pearl repo is Python: the gateway's `getblocktemplate` -> coinbase -> `submitblock` path, the `pearl-stratum-srv` stratum server + PPLNS split, and the `pearl_mining` (PyO3) verification bindings. The original Bitcoin P2Pool was also Python. Share throughput is low (~1 share / 10 s globally), so Python is fine for the sidechain/P2P layer; the perf-critical proof verification already lives in compiled Rust behind `pearl_mining`. See [`docs/blueprint.md`](docs/blueprint.md) for the full, source-grounded design.
 
 ## Repository layout
 
@@ -246,8 +243,9 @@ src/p2pearl/
     protocol.py          JSON-RPC framing + Pearlhash dialect parsing
     server.py            dialect-tolerant miner-facing stratum server
   p2p/node.py            gossip: announce/on-demand proof fetch, relay, window sync
+  gui.py                 the tkinter control panel (settings + start/stop + live log)
   daemon.py              PoolNode orchestrator: per-miner jobs, verify, block path
-tests/                   unit tests (102 passing)
+tests/                   unit tests (109 passing)
 docs/                    blueprint + running-a-node guide
 tools/apply_m2_binding.py  one-step additive patch for a stock Pearl checkout
 integration/             cross-repo notes (py-pearl-mining binding, stratum dialect)
@@ -259,7 +257,7 @@ Runs today — no node, no GPU, no native build:
 
 ```bash
 pip install -e ".[dev]"
-PYTHONPATH=src python -m pytest -q       # 102 passing (pure stdlib + a faked pearl_mining)
+PYTHONPATH=src python -m pytest -q       # 109 passing (pure stdlib + a faked pearl_mining)
 python -m p2pearl demo                   # watch the full pipeline: 2 nodes, stratum, P2P gossip, PPLNS
 ```
 
