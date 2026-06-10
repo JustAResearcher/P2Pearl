@@ -15,7 +15,9 @@ module (the CLI falls back to the demo when no GUI is possible).
 from __future__ import annotations
 
 import json
+import os
 import queue
+import shutil
 import subprocess
 import sys
 import threading
@@ -25,12 +27,23 @@ from . import __version__
 from .config import NodeRPCConfig
 
 SETTINGS_PATH = Path.home() / ".p2pearl" / "gui.json"
+PEARLD_INSTALL_DIR = Path.home() / ".p2pearl" / "bin"
+PEARLD_DATA_DIR = Path.home() / ".p2pearl" / "pearld-data"
 GUI_UNAVAILABLE = 2          # main() return code: tkinter/display missing — caller may fall back
+
+# Networks the managed pearld can run on ("regtest" is for tests/dev, not the UI).
+NETWORKS = {
+    "mainnet": {"flag": None, "rpc_port": 44107},
+    "testnet": {"flag": "--testnet", "rpc_port": 44109},
+    "regtest": {"flag": "--regtest", "rpc_port": 44107},
+}
 
 DEFAULTS = {
     "rpc_url": "http://127.0.0.1:44107",
     "rpc_user": "user",
     "rpc_pass": "pass",
+    "manage_pearld": "auto",     # "1"/"0"; "auto" = on iff a bundled pearld exists
+    "network": "mainnet",        # managed pearld network
     "stratum_host": "0.0.0.0",
     "stratum_port": "3360",
     "p2p_host": "0.0.0.0",
@@ -106,6 +119,126 @@ def self_command() -> list[str]:
     return [sys.executable, "-m", "p2pearl"]
 
 
+def bundled_pearld_dir() -> Path | None:
+    """The pearld binaries packaged inside the frozen exe, if this build has them."""
+    if getattr(sys, "frozen", False):
+        d = Path(getattr(sys, "_MEIPASS", "")) / "pearld_bin"
+        if (d / _pearld_name()).exists():
+            return d
+    return None
+
+
+def _pearld_name() -> str:
+    return "pearld.exe" if os.name == "nt" else "pearld"
+
+
+def ensure_pearld_installed(source_dir: Path | None = None,
+                            dest: Path = PEARLD_INSTALL_DIR) -> Path | None:
+    """Make a persistent pearld available and return its path (or None).
+
+    Copies the bundled binaries (pearld, prlctl, LICENSE) out of the onefile
+    exe's temp dir into ``dest`` — the frozen exe's extraction dir vanishes on
+    exit, so a long-running pearld must live somewhere durable. Re-copies when
+    the bundled binary differs (a new release upgrades the install). Falls back
+    to a pearld already on PATH for source/Linux installs.
+    """
+    exe = dest / _pearld_name()
+    src = source_dir if source_dir is not None else bundled_pearld_dir()
+    if src is not None and (src / _pearld_name()).exists():
+        bundled = src / _pearld_name()
+        if not exe.exists() or exe.stat().st_size != bundled.stat().st_size:
+            dest.mkdir(parents=True, exist_ok=True)
+            for f in src.iterdir():
+                if f.is_file():
+                    shutil.copy2(f, dest / f.name)
+    if exe.exists():
+        return exe
+    on_path = shutil.which("pearld")
+    return Path(on_path) if on_path else None
+
+
+def pearld_args(exe: Path, settings: dict, datadir: Path = PEARLD_DATA_DIR) -> list[str]:
+    """The command line for the MANAGED pearld, derived from the GUI settings."""
+    s = {**DEFAULTS, **settings}
+    net = NETWORKS[s["network"]]
+    args = [
+        str(exe), "--notls",
+        f"--rpcuser={s['rpc_user'].strip() or 'user'}",
+        f"--rpcpass={s['rpc_pass'] or 'pass'}",
+        f"--rpclisten=127.0.0.1:{net['rpc_port']}",
+        f"--datadir={datadir}",
+        f"--logdir={datadir / 'logs'}",
+    ]
+    if net["flag"]:
+        args.append(net["flag"])
+    return args
+
+
+def managed_rpc_url(network: str) -> str:
+    return f"http://127.0.0.1:{NETWORKS[network]['rpc_port']}"
+
+
+def watch_pearld_sync(settings: dict, stop_event: "threading.Event", post) -> None:
+    """Poll the managed pearld until it can serve work, reporting progress.
+
+    ``post(event_tuple)`` receives ("pearld_status", text) while starting/syncing
+    and a final ("pearld_ready", height) once getblocktemplate succeeds (pearld
+    only serves templates when fully synced — exactly what the pool needs).
+    """
+    from .chain.node_rpc import NodeRPC, NodeRPCError
+    cfg = NodeRPCConfig(url=settings["rpc_url"].strip(),
+                        user=settings["rpc_user"].strip(),
+                        password=settings["rpc_pass"])
+    rpc = NodeRPC(cfg)
+    while not stop_event.is_set():
+        try:
+            info = rpc._call("getblockchaininfo", [], timeout=5)
+            try:
+                rpc.get_block_template()
+                post(("pearld_ready", info.get("blocks", 0)))
+                return
+            except NodeRPCError:
+                post(("pearld_status",
+                      f"pearld syncing — height {info.get('blocks', 0):,} "
+                      f"(headers {info.get('headers', 0):,})"))
+        except Exception:
+            post(("pearld_status", "pearld starting ..."))
+        stop_event.wait(3)
+
+
+def stop_pearld_gracefully(proc: "subprocess.Popen", settings: dict | None = None) -> None:
+    """Clean shutdown so the database flushes (a hard kill can lose recent blocks).
+
+    Uses pearld's own ``stop`` RPC — console control events cannot reach a
+    windowless Windows child, but the RPC works everywhere. Escalates to
+    terminate/kill only if the RPC route fails.
+    """
+    if proc.poll() is not None:
+        return
+    if settings is not None:
+        try:
+            from .chain.node_rpc import NodeRPC
+            cfg = NodeRPCConfig(url=settings["rpc_url"].strip(),
+                                user=settings["rpc_user"].strip(),
+                                password=settings["rpc_pass"])
+            NodeRPC(cfg)._call("stop", [], timeout=5)
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=25)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+    try:
+        proc.terminate()
+        proc.wait(timeout=5)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
 def test_rpc(settings: dict) -> tuple[bool, str]:
     """One quick getblocktemplate against pearld; returns (ok, human message)."""
     from .chain.node_rpc import NodeRPC, NodeRPCError
@@ -164,7 +297,13 @@ def main() -> int:
 
     settings = load_settings()
     events: "queue.Queue[tuple]" = queue.Queue()
-    state = {"proc": None, "label": ""}      # the running child (daemon or demo)
+    state = {
+        "proc": None, "label": "",           # the running child (daemon or demo)
+        "pearld_proc": None,                 # the managed pearld, if we started one
+        "pearld_ready": False,
+        "watch_stop": None,                  # threading.Event for the sync watcher
+        "pending_node_start": False,         # start the node as soon as pearld is ready
+    }
 
     # ---- settings form ---------------------------------------------------- #
     outer = ttk.Frame(root, padding=10)
@@ -185,10 +324,34 @@ def main() -> int:
     node_box = ttk.LabelFrame(outer, text=" Your Pearl node (pearld) ", padding=8)
     node_box.pack(fill="x")
     node_box.columnconfigure(1, weight=1)
-    add_entry(node_box, 0, 0, "RPC URL", "rpc_url", width=34,
+
+    pearld_available = (bundled_pearld_dir() is not None
+                        or (PEARLD_INSTALL_DIR / _pearld_name()).exists()
+                        or shutil.which("pearld") is not None)
+    manage_var = tk.BooleanVar(value=(settings["manage_pearld"] == "1"
+                                      or (settings["manage_pearld"] == "auto" and pearld_available)))
+    network_var = tk.StringVar(value=settings["network"] if settings["network"] in ("mainnet", "testnet")
+                               else "mainnet")
+    manage_row = ttk.Frame(node_box)
+    manage_row.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
+    ttk.Checkbutton(manage_row, text="Run pearld for me", variable=manage_var).pack(side="left")
+    ttk.Combobox(manage_row, textvariable=network_var, values=("mainnet", "testnet"),
+                 state="readonly", width=9).pack(side="left", padx=(8, 0))
+    ttk.Label(manage_row, text="starts + syncs the bundled Pearl node, then starts the pool",
+              foreground="#888").pack(side="left", padx=(8, 0))
+
+    add_entry(node_box, 1, 0, "RPC URL", "rpc_url", width=34,
               hint="44107 mainnet / 44109 testnet convention")
-    add_entry(node_box, 1, 0, "RPC user", "rpc_user")
-    add_entry(node_box, 2, 0, "RPC password", "rpc_pass", show="•")
+    add_entry(node_box, 2, 0, "RPC user", "rpc_user")
+    add_entry(node_box, 3, 0, "RPC password", "rpc_pass", show="•")
+
+    def _sync_managed_url(*_):
+        if manage_var.get():
+            fields["rpc_url"].set(managed_rpc_url(network_var.get()))
+
+    manage_var.trace_add("write", _sync_managed_url)
+    network_var.trace_add("write", _sync_managed_url)
+    _sync_managed_url()
 
     pool_box = ttk.LabelFrame(outer, text=" Pool settings ", padding=8)
     pool_box.pack(fill="x", pady=(8, 0))
@@ -238,6 +401,8 @@ def main() -> int:
     def current_settings() -> dict:
         s = {k: v.get() for k, v in fields.items()}
         s["peers"] = peers_text.get("1.0", "end").strip()
+        s["manage_pearld"] = "1" if manage_var.get() else "0"
+        s["network"] = network_var.get()
         return s
 
     def log(line: str) -> None:
@@ -276,8 +441,53 @@ def main() -> int:
 
         threading.Thread(target=reader, daemon=True).start()
 
+    def start_pearld(s: dict) -> bool:
+        exe = ensure_pearld_installed()
+        if exe is None:
+            messagebox.showerror(
+                "P2Pearl",
+                "No pearld available: this build has no bundled Pearl node and none was "
+                "found on PATH. Untick 'Run pearld for me' and point the RPC URL at a "
+                "pearld you run yourself (see docs/running-a-node.md).")
+            manage_var.set(False)
+            return False
+        flags = (0x08000000 | 0x00000200) if sys.platform == "win32" else 0  # NO_WINDOW | NEW_PROCESS_GROUP
+        PEARLD_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        console_log = open(PEARLD_DATA_DIR / "pearld-console.log", "ab")
+        try:
+            proc = subprocess.Popen(pearld_args(exe, s), stdin=subprocess.DEVNULL,
+                                    stdout=console_log, stderr=subprocess.STDOUT,
+                                    creationflags=flags)
+        except OSError as exc:
+            console_log.close()
+            messagebox.showerror("P2Pearl", f"could not start pearld: {exc}")
+            return False
+        finally:
+            console_log.close()                 # the child holds its own handle
+        state["pearld_proc"] = proc
+        state["pearld_ready"] = False
+        log(f"--- pearld started (pid {proc.pid}, {s['network']}) ---")
+        log(f"    binaries : {exe.parent}")
+        log(f"    chain data + logs: {PEARLD_DATA_DIR}")
+        stop_ev = threading.Event()
+        state["watch_stop"] = stop_ev
+        threading.Thread(target=watch_pearld_sync, args=(s, stop_ev, events.put),
+                         daemon=True).start()
+        return True
+
     def start_node():
-        spawn(build_daemon_args(current_settings()), "node")
+        s = current_settings()
+        if manage_var.get() and not state["pearld_ready"]:
+            save_settings(s)
+            pp = state["pearld_proc"]
+            if pp is None or pp.poll() is not None:
+                if not start_pearld(s):
+                    return
+            status_var.set("waiting for pearld to sync ...")
+            state["pending_node_start"] = True
+            start_btn["state"] = "disabled"
+            return                               # the node starts on ("pearld_ready")
+        spawn(build_daemon_args(s), "node")
 
     def run_demo():
         spawn(["demo"], "demo")
@@ -350,6 +560,17 @@ def main() -> int:
                     status_var.set("stopped")
                     start_btn["state"] = demo_btn["state"] = "normal"
                     stop_btn["state"] = "disabled"
+                elif ev[0] == "pearld_status":
+                    if state["pearld_proc"] is not None:
+                        status_var.set(ev[1])
+                elif ev[0] == "pearld_ready":
+                    state["pearld_ready"] = True
+                    log(f"--- pearld is synced and serving (height {ev[1]:,}) ---")
+                    status_var.set(f"pearld ready — height {ev[1]:,}")
+                    if state["pending_node_start"]:
+                        state["pending_node_start"] = False
+                        start_btn["state"] = "normal"
+                        spawn(build_daemon_args(current_settings()), "node")
                 elif ev[0] == "rpc":
                     _ok, msg = ev[1], ev[2]
                     status_var.set(msg)
@@ -357,18 +578,38 @@ def main() -> int:
                     test_btn["state"] = "normal"
         except queue.Empty:
             pass
+        # A managed pearld that died (port clash, bad flags) must not strand the UI.
+        pp = state["pearld_proc"]
+        if pp is not None and pp.poll() is not None:
+            log(f"--- pearld exited (code {pp.returncode}) — see "
+                f"{PEARLD_DATA_DIR / 'pearld-console.log'} ---")
+            state["pearld_proc"] = None
+            state["pearld_ready"] = False
+            if state["watch_stop"] is not None:
+                state["watch_stop"].set()
+            if state["pending_node_start"]:
+                state["pending_node_start"] = False
+                start_btn["state"] = "normal"
+                status_var.set("pearld exited — fix and Start again")
         root.after(120, poll)
 
     def on_close():
-        proc = state["proc"]
-        if proc is not None:
-            if not messagebox.askokcancel("P2Pearl", f"Stop the running {state['label']} and quit?"):
+        running = [n for n, p in (("pool node", state["proc"]), ("pearld", state["pearld_proc"]))
+                   if p is not None and p.poll() is None]
+        if running:
+            if not messagebox.askokcancel("P2Pearl", f"Stop the running {' + '.join(running)} and quit?"):
                 return
+        if state["watch_stop"] is not None:
+            state["watch_stop"].set()
+        proc = state["proc"]
+        if proc is not None and proc.poll() is None:
             proc.terminate()
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+        if state["pearld_proc"] is not None:
+            stop_pearld_gracefully(state["pearld_proc"], current_settings())  # clean flush, ~seconds
         save_settings(current_settings())
         root.destroy()
 

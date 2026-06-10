@@ -13,6 +13,7 @@ hiddenimports += collect_submodules('p2pearl')
 # Unset -> slim build (gui/demo/CLI; daemon explains what is missing).
 pathex = ['src']
 excludes = ['torch']
+datas = []
 _gateway_src = os.environ.get('PEARL_GATEWAY_SRC')
 if _gateway_src:
     pathex.append(_gateway_src)
@@ -22,12 +23,22 @@ if _gateway_src:
 else:
     excludes += ['bitcoinutils', 'pearl_mining', 'numpy']
 
+# Set PEARLD_BIN_DIR to a dir holding pearld(.exe) + prlctl(.exe) + LICENSE to embed
+# the Pearl full node itself — the GUI extracts it to ~/.p2pearl/bin on first use and
+# can then run + sync it for the user ("Run pearld for me").
+_pearld_bin = os.environ.get('PEARLD_BIN_DIR')
+if _pearld_bin:
+    for f in ('pearld.exe', 'prlctl.exe', 'pearld', 'prlctl', 'LICENSE'):
+        p = os.path.join(_pearld_bin, f)
+        if os.path.exists(p):
+            datas.append((p, 'pearld_bin'))
+
 
 a = Analysis(
     ['p2pearl_launch.py'],
     pathex=pathex,
     binaries=[],
-    datas=[],
+    datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

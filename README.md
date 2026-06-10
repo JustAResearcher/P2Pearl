@@ -38,17 +38,15 @@ That's it. There is no account and no balance page: **when the pool finds a bloc
 
 A pool node is the thing miners point at. You can run one for yourself, your friends, or the whole network — it pays you nothing extra (that's the point: 0 % fee), but it makes the pool exist.
 
-**You need:** a Pearl full node (`pearld`) your machine can talk to, plus:
+- **Windows — one exe, nothing else.** `p2pearl.exe` contains the entire stack, *including the Pearl full node itself*. Double-click it, leave **"Run pearld for me"** ticked, click **▶ Start node** — it unpacks `pearld` to `~/.p2pearl/bin`, starts it, shows the sync progress live, and launches the pool automatically the moment the chain is ready. Validated end-to-end on a single Windows machine (blocks built, mined, and ZK-proved on Windows, accepted by a native-Windows `pearld`).
+- **Linux** — you run your own `pearld`, plus a one-time ~15-minute build of Pearl's proof verifier: the copy-paste walkthrough is [`docs/running-a-node.md`](docs/running-a-node.md).
 
-- **Windows — nothing to build, no Linux anywhere.** `p2pearl.exe` has the entire pool node inside, and a native Windows `pearld` (`pearld-windows-x86_64.zip`) is attached to the release too. Run both, point one at the other, done — validated end-to-end on a single Windows machine (blocks built, mined, and ZK-proved on Windows, accepted by a native-Windows `pearld`). Details: [`docs/running-a-node.md`](docs/running-a-node.md#windows-native).
-- **Linux** — a one-time ~15-minute build of Pearl's proof verifier: the copy-paste walkthrough is [`docs/running-a-node.md`](docs/running-a-node.md).
+The control panel flow (double-click the exe, or `p2pearl gui`):
 
-Then configuration is the easy part — open the control panel (double-click the exe, or `p2pearl gui`):
-
-1. Fill in **RPC URL / user / password** (how to reach your `pearld`).
+1. **"Run pearld for me"** (Windows, on by default): pick mainnet or testnet and skip to step 3. Running your own `pearld` instead? Untick it and fill in **RPC URL / user / password**.
 2. Click **Test pearld** — it tells you if the connection works.
 3. (Optional) Add **Peers** — other operators' addresses, one per line. This merges you into one big shared pool; leave empty to run your own private pool.
-4. Click **▶ Start node.** The live log streams in the window. Copy the **"Miners run:"** command to your miners.
+4. Click **▶ Start node.** The live log streams in the window (with sync progress if pearld is managed). Copy the **"Miners run:"** command to your miners. Closing the window shuts everything down cleanly.
 
 Prefer a terminal or a server? The same thing as one command: `p2pearl daemon --rpc-url ... --peer ...` — every flag is documented in the [configuration reference](#configuration-reference) below, including ready-made systemd units.
 

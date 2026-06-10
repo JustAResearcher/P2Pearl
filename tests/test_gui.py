@@ -65,3 +65,44 @@ def test_miner_command_uses_port_and_wallet():
 def test_self_command_unfrozen():
     cmd = self_command()
     assert cmd[0] == sys.executable and cmd[-2:] == ["-m", "p2pearl"]
+
+
+def test_pearld_args_networks(tmp_path):
+    from p2pearl.gui import managed_rpc_url, pearld_args
+    exe = tmp_path / "pearld.exe"
+    s = dict(DEFAULTS, rpc_user="u", rpc_pass="p")
+    main_args = pearld_args(exe, dict(s, network="mainnet"), datadir=tmp_path)
+    assert "--rpclisten=127.0.0.1:44107" in main_args and "--testnet" not in main_args
+    assert "--rpcuser=u" in main_args and "--rpcpass=p" in main_args and "--notls" in main_args
+    test_args = pearld_args(exe, dict(s, network="testnet"), datadir=tmp_path)
+    assert "--testnet" in test_args and "--rpclisten=127.0.0.1:44109" in test_args
+    reg_args = pearld_args(exe, dict(s, network="regtest"), datadir=tmp_path)
+    assert "--regtest" in reg_args
+    assert managed_rpc_url("mainnet").endswith(":44107")
+    assert managed_rpc_url("testnet").endswith(":44109")
+
+
+def test_ensure_pearld_installed_copies_and_upgrades(tmp_path):
+    import os
+
+    from p2pearl.gui import _pearld_name, ensure_pearld_installed
+    src, dest = tmp_path / "bundle", tmp_path / "bin"
+    src.mkdir()
+    name = _pearld_name()
+    (src / name).write_bytes(b"PEARLD-V1")
+    (src / "LICENSE").write_text("ISC")
+    exe = ensure_pearld_installed(source_dir=src, dest=dest)
+    assert exe == dest / name and exe.read_bytes() == b"PEARLD-V1"
+    assert (dest / "LICENSE").exists()
+    # same size -> untouched; new size -> upgraded
+    (src / name).write_bytes(b"PEARLD-V2-LONGER")
+    exe = ensure_pearld_installed(source_dir=src, dest=dest)
+    assert exe.read_bytes() == b"PEARLD-V2-LONGER"
+
+
+def test_ensure_pearld_installed_none_without_source(tmp_path, monkeypatch):
+    import shutil as _shutil
+
+    from p2pearl import gui
+    monkeypatch.setattr(_shutil, "which", lambda *_: None)
+    assert gui.ensure_pearld_installed(source_dir=None, dest=tmp_path / "empty") is None

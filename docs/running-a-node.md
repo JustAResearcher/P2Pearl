@@ -94,7 +94,12 @@ p2pearl gui        # or: p2pearl daemon --rpc-url http://<pearld-host>:44109 ...
 
 **Where does `pearld` run? Natively on Windows too — no WSL anywhere.**
 
-- **Download it**: `pearld-windows-x86_64.zip` is attached to the
+- **Let the exe handle it (easiest)**: `p2pearl.exe` BUNDLES `pearld`. Tick
+  **"Run pearld for me"** in the control panel and Start — it extracts the node to
+  `~/.p2pearl/bin`, runs it with your RPC credentials (chain data in
+  `~/.p2pearl/pearld-data`), shows sync progress, starts the pool when ready, and
+  shuts it down cleanly (via the `stop` RPC) when you close the window.
+- **Download it separately**: `pearld-windows-x86_64.zip` is attached to the
   [release](https://github.com/JustAResearcher/P2Pearl/releases/latest) (built from
   stock upstream source; ISC license included). Unzip and run:
 
