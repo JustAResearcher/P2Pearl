@@ -40,7 +40,7 @@ A pool node is the thing miners point at. You can run one for yourself, your fri
 
 **You need:** a Pearl full node (`pearld`) your machine can talk to, plus:
 
-- **Windows — nothing to build.** `p2pearl.exe` has the entire node inside (validated end-to-end: a block built and ZK-proved on Windows was accepted by `pearld`). If you don't have a `pearld` yet, run one in WSL or on any machine you can reach — [`docs/running-a-node.md`](docs/running-a-node.md#windows-native) has the options.
+- **Windows — nothing to build, no Linux anywhere.** `p2pearl.exe` has the entire pool node inside, and a native Windows `pearld` (`pearld-windows-x86_64.zip`) is attached to the release too. Run both, point one at the other, done — validated end-to-end on a single Windows machine (blocks built, mined, and ZK-proved on Windows, accepted by a native-Windows `pearld`). Details: [`docs/running-a-node.md`](docs/running-a-node.md#windows-native).
 - **Linux** — a one-time ~15-minute build of Pearl's proof verifier: the copy-paste walkthrough is [`docs/running-a-node.md`](docs/running-a-node.md).
 
 Then configuration is the easy part — open the control panel (double-click the exe, or `p2pearl gui`):

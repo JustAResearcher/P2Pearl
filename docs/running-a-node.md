@@ -92,13 +92,25 @@ $env:PYTHONPATH = "$PWD\pearl\miner\pearl-gateway\src"
 p2pearl gui        # or: p2pearl daemon --rpc-url http://<pearld-host>:44109 ...
 ```
 
-**Where does `pearld` run?** Anywhere your Windows box can reach over RPC:
+**Where does `pearld` run? Natively on Windows too — no WSL anywhere.**
 
-- **Another machine** — point `--rpc-url` at it (and set that `pearld`'s `rpclisten`
-  to an address your box can reach; keep RPC off the public internet).
-- **WSL on the same machine** — build/run `pearld` inside WSL per the Linux steps
-  above; Windows reaches it at `http://127.0.0.1:44109` automatically.
-- A *native Windows* `pearld` build is untested (CGO toolchain); use one of the above.
+- **Download it**: `pearld-windows-x86_64.zip` is attached to the
+  [release](https://github.com/JustAResearcher/P2Pearl/releases/latest) (built from
+  stock upstream source; ISC license included). Unzip and run:
+
+  ```powershell
+  .\pearld.exe --notls --rpcuser=u --rpcpass=p                                    # mainnet
+  .\pearld.exe --testnet --notls --rpcuser=u --rpcpass=p --rpclisten=127.0.0.1:44109  # testnet
+  ```
+
+  Let it sync, then point P2Pearl at `http://127.0.0.1:44107` (mainnet) or `:44109`
+  (testnet). Validated end-to-end: a native-Windows `pearld` accepted blocks built,
+  mined, and ZK-proved by the native-Windows P2Pearl stack — one machine, zero Linux.
+- **Build it yourself**: [`tools/build_pearld_windows.ps1`](../tools/build_pearld_windows.ps1)
+  automates the whole thing (Rust `windows-gnu` FFI + mingw `libxmss` + Go/CGO).
+  Prereqs: Go 1.26+, rustup, and mingw-w64 (e.g. [winlibs.com](https://winlibs.com)).
+- Or run `pearld` on any other machine you can reach over RPC (keep RPC off the
+  public internet), or in WSL per the Linux steps above.
 
 ## Prover speed — avoiding orphaned blocks
 
