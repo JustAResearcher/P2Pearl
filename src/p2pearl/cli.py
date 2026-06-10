@@ -15,16 +15,19 @@ from . import __version__
 
 
 def _double_clicked() -> bool:
-    """True if this exe was launched by double-click (its console holds only this
-    process), so we should pause before exit instead of letting the window vanish.
-    Windows-only; any failure falls back to False (normal CLI behaviour)."""
+    """True if this exe was launched by double-click (its console holds no shell),
+    so we should pause before exit instead of letting the window vanish.
+    A PyInstaller onefile exe runs as TWO console processes (bootloader parent +
+    this child), so a double-clicked exe sees 2; a shell launch adds the shell on
+    top (3+). Windows-only; any failure falls back to False (normal CLI)."""
     if sys.platform != "win32":
         return False
     try:
         import ctypes
 
         buf = (ctypes.c_uint * 16)()
-        return ctypes.windll.kernel32.GetConsoleProcessList(buf, 16) == 1
+        count = ctypes.windll.kernel32.GetConsoleProcessList(buf, 16)
+        return count <= (2 if getattr(sys, "frozen", False) else 1)
     except Exception:
         return False
 
