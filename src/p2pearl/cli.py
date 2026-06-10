@@ -1,8 +1,11 @@
 """P2Pearl command-line entry point.
 
 Subcommands:
+  gui     open the graphical control panel (settings form + start/stop + live log)
   demo    run the local end-to-end demo (no node/GPU/native build needed)
   daemon  wire and run a live pool node (needs pearld + pearl_mining + bitcoinutils)
+
+A double-clicked executable opens the GUI (or runs the demo if no display).
 """
 
 from __future__ import annotations
@@ -36,6 +39,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="p2pearl", description=__doc__)
     parser.add_argument("--version", action="version", version=f"p2pearl {__version__}")
     sub = parser.add_subparsers(dest="command")
+    sub.add_parser("gui", help="open the graphical control panel (settings + start/stop + log)")
     sub.add_parser("demo", help="run the local end-to-end demo")
     dp = sub.add_parser("daemon", help="run a live pool node (serves a stratum port; needs pearld + pearl_mining)")
     dp.add_argument("--rpc-url", help="pearld JSON-RPC URL (default http://127.0.0.1:44107)")
@@ -58,11 +62,22 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     standalone = _double_clicked()
+    ran_gui = False
     try:
-        # A double-clicked exe arrives with no subcommand; run the showcase demo.
-        if args.command == "demo" or (args.command is None and standalone):
-            if args.command is None:
-                print("No subcommand given - running 'demo'. (p2pearl --help for options)\n")
+        # A double-clicked exe arrives with no subcommand; open the control panel.
+        if args.command == "gui" or (args.command is None and standalone):
+            from . import gui
+            code = gui.main()
+            if code != gui.GUI_UNAVAILABLE:
+                ran_gui = True          # the window was the interaction; don't pause after
+                return code
+            if args.command == "gui":
+                return code             # explicitly asked for the GUI and there is none
+            print("(no GUI available - running the demo instead)\n")
+            from . import demo
+            asyncio.run(demo.main())
+            return 0
+        if args.command == "demo":
             from . import demo
             asyncio.run(demo.main())
             return 0
@@ -90,7 +105,9 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
     finally:
-        if standalone:
+        # Keep a double-click console window readable — except after the GUI, whose
+        # (hidden) console nobody can press Enter in.
+        if standalone and not ran_gui:
             try:
                 input("\nPress Enter to exit . . . ")
             except (EOFError, KeyboardInterrupt):

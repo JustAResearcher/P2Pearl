@@ -22,9 +22,9 @@ P2Pearl is to Pearl what [P2Pool](https://github.com/SChernykh/p2pool) is to Mon
 
 Download `p2pearl.exe` (Windows) or `p2pearl-linux-x86_64` (Linux) from the [latest release](https://github.com/JustAResearcher/P2Pearl/releases). No Python needed.
 
-- **Windows:** double-click `p2pearl.exe`. It runs a live local demo — two pool nodes gossiping over real sockets, simulated miners, a feeless PPLNS payout — and the window stays open until you press Enter.
-- **Linux:** `chmod +x p2pearl-linux-x86_64 && ./p2pearl-linux-x86_64 demo`
-- From a terminal: `p2pearl.exe --version`, `p2pearl.exe demo`, `p2pearl.exe daemon --help`.
+- **Double-click `p2pearl.exe`** (or run `p2pearl gui`) and the **control panel** opens: a settings form (pearld RPC, ports, peers, wallet), a **Start node** button, a live log pane, and a copy-paste miner command. Settings persist to `~/.p2pearl/gui.json`, so the next launch is open-and-click. The **Run demo (no setup)** button shows the whole pipeline working — two pool nodes gossiping over real sockets, simulated miners, a feeless PPLNS payout — without a Pearl node.
+- **Linux:** `chmod +x p2pearl-linux-x86_64 && ./p2pearl-linux-x86_64 gui` (or `demo` over SSH/headless).
+- From a terminal: `--version`, `gui`, `demo`, `daemon --help`.
 
 The demo fakes only the GPU cryptography; everything else (stratum, sharechain, PPLNS, P2P verification) is the real code path. From a source checkout the same CLI is `python -m p2pearl`.
 
@@ -68,7 +68,11 @@ Then point miners at `<your-ip>:3360`, and forward TCP **3360** + **37900** if y
 
 ## Configuration reference
 
-Everything an operator can configure, in one place. There is **no config file** — the daemon is configured entirely by command-line flags and a few environment variables; the *sidechain consensus* lives in code (`src/p2pearl/config.py`) and must be identical on every node.
+Everything an operator can configure, in one place.
+
+**The easy way: `p2pearl gui`.** The control panel covers every setting below (the rare ones under an *Advanced* toggle), persists them to `~/.p2pearl/gui.json`, tests your pearld connection, and starts/stops the daemon with a live log. The GUI is a thin wrapper — it launches `p2pearl daemon` with exactly the flags documented here, so everything below applies either way. A *live* node additionally needs the `pearl_mining` build from [`docs/running-a-node.md`](docs/running-a-node.md) (Linux); without it, Start tells you exactly what's missing, and the demo runs anywhere.
+
+For the daemon itself there is **no config file** — it is configured entirely by command-line flags and a few environment variables; the *sidechain consensus* lives in code (`src/p2pearl/config.py`) and must be identical on every node.
 
 ### `p2pearl daemon` flags
 
