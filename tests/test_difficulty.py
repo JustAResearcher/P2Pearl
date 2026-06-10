@@ -9,6 +9,7 @@ from p2pearl.consensus.difficulty import (  # noqa: E402
     MAX_TARGET,
     difficulty_to_target,
     next_share_target,
+    retarget_target,
     target_to_bits,
     target_to_difficulty,
 )
@@ -58,6 +59,28 @@ def test_retarget_clamped():
 def test_retarget_never_zero():
     nt = next_share_target(1, actual_interval_seconds=0, target_time_seconds=10)
     assert nt >= 1
+
+
+def test_retarget_target_steady_state_is_fixed_point():
+    # Work-rate exactly at one share per share_time -> the target is unchanged.
+    prev = MAX_TARGET // 64                     # difficulty 64
+    work, span = 59 * 64, 59 * 10               # 59 intervals at 10s, diff 64 each
+    assert retarget_target(prev, work, span, 10) == prev
+
+
+def test_retarget_target_consensus_clamps():
+    prev = MAX_TARGET // 64
+    # 10x too fast -> clamped to a /4 hardening step
+    assert retarget_target(prev, 64, 1, 10) == prev // 4
+    # 100x too slow -> clamped to a x4 easing step
+    assert retarget_target(prev, 64, 1000, 10) == prev * 4
+
+
+def test_retarget_target_integer_only_and_bounds():
+    # Pure-int math on 256-bit values; never exceeds MAX_TARGET, never below 1.
+    assert retarget_target(MAX_TARGET, 1, 1_000_000, 10) == MAX_TARGET
+    assert retarget_target(4, 1 << 256, 1, 10) == 1   # floor at 1, not 0
+    assert retarget_target(123, 0, 10, 10) == 123     # no work observed -> carry
 
 
 def test_target_to_bits_roundtrip_canonical():

@@ -34,6 +34,7 @@ from .consensus.difficulty import target_to_bits
 from .consensus.pplns import Payout, compute_pplns_payouts
 from .consensus.share import ShareBlock, double_sha256
 from .consensus.sharechain import GENESIS_PREV, Sharechain
+from .consensus.subsidy import block_subsidy
 from .stratum import protocol as P
 from .stratum.server import StratumServer, Submission, SubmitResult
 
@@ -46,7 +47,8 @@ class ParentTemplate:
     prev_block: bytes                  # 32 bytes (as returned by GBT previousblockhash)
     bits: int                          # compact block nbits (u32)
     curtime: int                       # unix seconds
-    coinbase_value: int                # subsidy + fees, in grains
+    coinbase_value: int                # GBT's subsidy + fees, in grains (informational —
+                                       # jobs pay the EXACT subsidy; shares are coinbase-only)
     version: int = 0x20000000
     witness_commitment: str | None = None        # GBT default_witness_commitment (hex)
     coinbaseaux_flags: str | None = None          # GBT coinbaseaux.flags (hex)
@@ -102,7 +104,6 @@ class PoolNode:
         self,
         *,
         sharechain: Sharechain,
-        share_target: int,
         make_header: MakeHeader,
         verify_share: VerifyShare,
         verify_block: VerifyBlock,
@@ -117,7 +118,6 @@ class PoolNode:
         min_payout_grains: int = config.MIN_PAYOUT_GRAINS,
     ) -> None:
         self.sharechain = sharechain
-        self.share_target = share_target
         self._make_header = make_header
         self._verify_share = verify_share
         self._verify_block = verify_block
@@ -160,9 +160,18 @@ class PoolNode:
         tip = self.sharechain.tip()
         prev_share_id = tip.share_id() if tip is not None else GENESIS_PREV
         s_height = (tip.sidechain_height + 1) if tip is not None else 0
+        # Consensus values — what _validate will demand of the submitted share:
+        # the chain-derived share target, and the EXACT parent subsidy (shares are
+        # coinbase-only, so GBT's coinbasevalue — subsidy + mempool fees — would
+        # overpay and make the assembled block invalid for the parent chain).
+        share_target = self.sharechain.expected_target(prev_share_id)
+        if share_target is None:
+            share_target = tip.share_target   # truncated local history right after a
+                                              # window sync — carry the tip's target
+        coinbase_value = block_subsidy(template.height)
 
         weights = self.sharechain.pplns_weights()
-        payouts = compute_pplns_payouts(template.coinbase_value, weights, self._min_payout)
+        payouts = compute_pplns_payouts(coinbase_value, weights, self._min_payout)
         payout_set_hash = double_sha256(serialize_payouts(payouts))
 
         candidate = ShareBlock(
@@ -172,16 +181,16 @@ class PoolNode:
             parent_prev_block=template.prev_block,
             parent_height=template.height,
             timestamp=template.curtime,
-            share_target=self.share_target,
+            share_target=share_target,
             block_nbits=template.bits,
             coinbase_version=template.version,
-            coinbase_value=template.coinbase_value,
+            coinbase_value=coinbase_value,
             miner_address=worker_address,
             payout_set_hash=payout_set_hash,
         )
         header_hex, header_ctx = self._make_header(template, payouts, candidate.share_id())
         ctx = _JobContext(candidate=candidate, header_ctx=header_ctx, payouts=payouts)
-        return (header_hex, self.share_target, s_height, ctx)
+        return (header_hex, share_target, s_height, ctx)
 
     # --- submit handling (the stratum submit_handler) ----------------------- #
     async def handle_submit(self, submission: Submission) -> SubmitResult:
@@ -325,7 +334,7 @@ def _production_make_header(template: ParentTemplate, payouts: list[Payout], sha
     + pearl_mining."""
     header, coinbase_tx = _build_share_header(
         template.version, template.prev_block, template.curtime, template.bits,
-        payouts, share_id, template.coinbase_value, template.height)
+        payouts, share_id, block_subsidy(template.height), template.height)
     header_ctx = {"header": header, "coinbase_tx": coinbase_tx, "transactions": []}
     return bytes(header.to_bytes()).hex(), header_ctx
 
@@ -478,8 +487,11 @@ def build_production_node(cfg: config.DaemonConfig | None = None, share_target: 
                           pause_cmd: str | None = None, resume_cmd: str | None = None) -> "tuple[PoolNode, Any]":
     """Wire a PoolNode with the real node RPC + verifiers + assembly adapters.
 
-    ``share_target`` defaults to a placeholder that MUST be calibrated to live pool
-    hashrate (sidechain difficulty = pool_hashrate * share_time)."""
+    The share target retargets automatically (one share per
+    ``SHARE_TARGET_TIME_SECONDS``, derived from the sharechain — see
+    ``Sharechain.expected_target``). ``share_target`` overrides only the GENESIS
+    bootstrap target; it is sidechain CONSENSUS, so every node on the same
+    sidechain must use the same value."""
     from .chain.node_rpc import NodeRPC
     from .p2p.node import P2PNode
     from .pow.verify import verify_block_solution, verify_share
@@ -488,16 +500,14 @@ def build_production_node(cfg: config.DaemonConfig | None = None, share_target: 
     _ensure_prover_env()                    # tune rayon + jemalloc BEFORE the first prove
     cfg = cfg or config.DaemonConfig()
     node = NodeRPC(cfg.node)
-    sharechain = Sharechain()
-    if share_target is None:
-        share_target = config.MAX_TARGET >> 24  # placeholder; calibrate to pool hashrate
+    sharechain = (Sharechain(bootstrap_target=share_target) if share_target is not None
+                  else Sharechain())
 
     async def submit_block(block_hex: str):
         return await asyncio.to_thread(node.submit_block, block_hex)
 
     pool = PoolNode(
         sharechain=sharechain,
-        share_target=share_target,
         make_header=_production_make_header,
         verify_share=verify_share,
         verify_block=verify_block_solution,

@@ -234,6 +234,9 @@ class P2PNode:
         if share.prev_share_id != GENESIS_PREV and share.prev_share_id not in self.sharechain:
             await peer.send({"t": "getshares", "from": max(0, share.sidechain_height - 1)})
             return                                  # orphan: sync instead
+        if not self.sharechain.is_valid_successor(share):
+            return                                  # consensus-invalid (target/subsidy/linkage):
+                                                    # don't fetch + verify its 137-370 KB proof
         self._pending[sid] = share
         await peer.send({"t": "getproof", "id": sid})
 
@@ -298,6 +301,8 @@ class P2PNode:
                 continue
             if share.prev_share_id != GENESIS_PREV and share.prev_share_id not in self.sharechain:
                 continue                             # gap; the live path will fill it
+            if not self.sharechain.is_valid_successor(share):
+                continue                             # consensus-invalid: skip the proof verify
             if not self._verify(share, pair[1]):
                 continue
             if self.sharechain.add_share(share, verified=True, proof=pair[1].encode("ascii")).accepted:

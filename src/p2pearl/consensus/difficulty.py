@@ -50,6 +50,36 @@ def next_share_target(
     return max(1, min(MAX_TARGET, new_target))
 
 
+def retarget_target(
+    prev_target: int,
+    window_work: int,
+    span_seconds: int,
+    share_time_seconds: int,
+    clamp: int = 4,
+) -> int:
+    """Consensus retarget: the share target that follows ``prev_target``.
+
+    ``window_work`` is the summed difficulty mined during ``span_seconds`` (the
+    retarget window, excluding its oldest share — the work that *arrived* within
+    the span). The next difficulty aims the pool's observed work-rate at one
+    share per ``share_time_seconds``:
+
+        next_difficulty = window_work * share_time // span
+
+    clamped so the target moves at most ``clamp``x per share (both directions).
+    INTEGER ARITHMETIC ONLY — every node must derive the identical target; do
+    not introduce floats here (256-bit ints exceed float precision).
+    """
+    if window_work <= 0:
+        return prev_target
+    span = max(1, int(span_seconds))
+    next_difficulty = max(1, (window_work * int(share_time_seconds)) // span)
+    target = MAX_TARGET // next_difficulty
+    lo = max(1, prev_target // clamp)
+    hi = min(MAX_TARGET, prev_target * clamp)
+    return max(lo, min(hi, target))
+
+
 def target_to_bits(target: int) -> int:
     """Encode a 256-bit ``target`` as a Bitcoin-compact ``nbits`` (u32).
 

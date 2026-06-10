@@ -12,26 +12,29 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from p2pearl.config import SIDECHAIN_VERSION  # noqa: E402
+from p2pearl.config import BOOTSTRAP_SHARE_TARGET, SIDECHAIN_VERSION  # noqa: E402
 from p2pearl.consensus.share import ShareBlock  # noqa: E402
 from p2pearl.consensus.sharechain import GENESIS_PREV, Sharechain  # noqa: E402
+from p2pearl.consensus.subsidy import block_subsidy  # noqa: E402
 from p2pearl.p2p.node import P2PNode  # noqa: E402
 
 PROOF_B64 = base64.b64encode(b"plain-proof-bytes").decode()
 
 
-def _share(prev, height, miner="prl1pqqqqminer", target=1 << 248):
+def _share(prev, height, miner="prl1pqqqqminer", target=BOOTSTRAP_SHARE_TARGET):
+    # 10s spacing == SHARE_TARGET_TIME, so the consensus retarget holds the
+    # bootstrap target at every height and the helper can stamp it directly.
     return ShareBlock(
         version=SIDECHAIN_VERSION,
         sidechain_height=height,
         prev_share_id=prev,
         parent_prev_block=b"\x22" * 32,
         parent_height=1,
-        timestamp=1000 + height,
+        timestamp=1000 + 10 * height,
         share_target=target,
         block_nbits=0x1E01FFFF,
         coinbase_version=0x20000000,
-        coinbase_value=5_000_000_000,
+        coinbase_value=block_subsidy(1),
         miner_address=miner,
         payout_set_hash=b"\x33" * 32,
     )

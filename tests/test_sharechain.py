@@ -5,27 +5,32 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from p2pearl.config import SIDECHAIN_VERSION  # noqa: E402
+from p2pearl.config import BOOTSTRAP_SHARE_TARGET, SIDECHAIN_VERSION  # noqa: E402
 from p2pearl.consensus.pplns import uncle_weight  # noqa: E402
 from p2pearl.consensus.share import ShareBlock  # noqa: E402
 from p2pearl.consensus.sharechain import GENESIS_PREV, Sharechain  # noqa: E402
+from p2pearl.consensus.subsidy import block_subsidy  # noqa: E402
 
 Z = b"\x00" * 32
-T = 1 << 248  # base share target -> difficulty ~255
+T = BOOTSTRAP_SHARE_TARGET  # difficulty 64
 
 
-def mk(prev, height, *, miner="prlA", target=T, ts=1000, uncles=None, parent_height=1, version=SIDECHAIN_VERSION):
+def mk(prev, height, *, miner="prlA", target=T, ts=None, uncles=None, parent_height=1,
+       version=SIDECHAIN_VERSION, coinbase_value=None):
+    # Default timestamps are spaced exactly SHARE_TARGET_TIME (10s) apart, so the
+    # consensus retarget holds the bootstrap target at every height and the helper
+    # can stamp it without consulting the chain.
     return ShareBlock(
         version=version,
         sidechain_height=height,
         prev_share_id=prev,
         parent_prev_block=Z,
         parent_height=parent_height,
-        timestamp=ts,
+        timestamp=(1000 + 10 * height) if ts is None else ts,
         share_target=target,
         block_nbits=0x1E01FFFF,
         coinbase_version=0x20000000,
-        coinbase_value=5_000_000_000,
+        coinbase_value=block_subsidy(parent_height) if coinbase_value is None else coinbase_value,
         miner_address=miner,
         payout_set_hash=Z,
         pow_hash=Z,
@@ -122,14 +127,17 @@ def test_bad_version_rejected():
 
 
 def test_reorg_higher_cumulative_wins():
+    # Targets are consensus-fixed per position, so a heavier branch is a LONGER one.
     sc = Sharechain(window=8)
     g = _genesis(sc)
-    a1 = mk(g.share_id(), 1, miner="prlA", target=T)            # diff ~255
+    a1 = mk(g.share_id(), 1, miner="prlA")
     assert add(sc, a1).is_best_tip
-    b1 = mk(g.share_id(), 1, miner="prlB", target=(1 << 240))   # higher diff -> reorg
-    r = add(sc, b1)
+    b1 = mk(g.share_id(), 1, miner="prlB")          # sibling branch, same work so far
+    assert not add(sc, b1).is_best_tip
+    b2 = mk(b1.share_id(), 2, miner="prlB")         # extends b -> more cumulative work
+    r = add(sc, b2)
     assert r.accepted and r.is_best_tip
-    assert sc.tip().share_id() == b1.share_id()
+    assert sc.tip().share_id() == b2.share_id()
 
 
 def test_competing_share_same_diff_keeps_first_tip():
@@ -237,6 +245,91 @@ def test_pruning_bounds_storage():
     # tip height 14, cutoff = 14 - 9 = 5 -> heights 0..4 dropped, 5..14 kept (10)
     assert sc.height() == 14
     assert len(sc) == 10
+
+
+# --------------------------------------------------------------------------- #
+# Consensus: share-target retarget + subsidy-exact coinbase_value (v3)
+# --------------------------------------------------------------------------- #
+
+def test_genesis_bad_share_target_rejected():
+    sc = Sharechain(window=8)
+    r = add(sc, mk(GENESIS_PREV, 0, target=T // 2))
+    assert not r.accepted and r.reason == "bad share target"
+
+
+def test_child_bad_share_target_rejected():
+    sc = Sharechain(window=8)
+    g = _genesis(sc)
+    r = add(sc, mk(g.share_id(), 1, target=T // 2))   # consensus demands T (carry)
+    assert not r.accepted and r.reason == "bad share target"
+
+
+def test_bad_coinbase_value_rejected():
+    sc = Sharechain(window=8)
+    r = add(sc, mk(GENESIS_PREV, 0, coinbase_value=block_subsidy(1) + 1))
+    assert not r.accepted and r.reason == "bad coinbase value"
+
+
+def test_future_timestamp_rejected():
+    import time
+    sc = Sharechain(window=8)
+    r = add(sc, mk(GENESIS_PREV, 0, ts=int(time.time()) + 10_000))
+    assert not r.accepted and r.reason == "timestamp too far in future"
+
+
+def test_retarget_steady_at_share_time():
+    # Shares arriving exactly every SHARE_TARGET_TIME keep the target unchanged.
+    sc = Sharechain(window=8)
+    g = _genesis(sc)
+    s1 = mk(g.share_id(), 1)
+    add(sc, s1)
+    assert sc.expected_target(g.share_id()) == T          # 1 share: carry
+    assert sc.expected_target(s1.share_id()) == T         # 10s interval: hold
+
+
+def test_retarget_hardens_on_fast_shares():
+    # Shares 1s apart (10x too fast) -> the target shrinks, clamped to /4 per share,
+    # and a share still carrying the old target is rejected.
+    sc = Sharechain(window=8)
+    g = mk(GENESIS_PREV, 0, ts=1000)
+    add(sc, g)
+    s1 = mk(g.share_id(), 1, ts=1001)
+    assert add(sc, s1).accepted                            # carry: still T
+    expected = sc.expected_target(s1.share_id())
+    assert expected == T // 4                              # clamped hardening step
+    r = add(sc, mk(s1.share_id(), 2, ts=1002))             # stamps T -> stale target
+    assert not r.accepted and r.reason == "bad share target"
+    assert add(sc, mk(s1.share_id(), 2, ts=1002, target=expected)).accepted
+
+
+def test_retarget_eases_on_slow_shares():
+    # Shares 1000s apart (100x too slow) -> the target grows, clamped to x4 per share.
+    sc = Sharechain(window=8)
+    g = mk(GENESIS_PREV, 0, ts=1000)
+    add(sc, g)
+    s1 = mk(g.share_id(), 1, ts=2000)
+    assert add(sc, s1).accepted
+    assert sc.expected_target(s1.share_id()) == T * 4
+
+
+def test_expected_target_unknown_parent_is_none():
+    sc = Sharechain(window=8)
+    assert sc.expected_target(b"\x07" * 32) is None
+
+
+def test_expected_target_truncated_history_is_none():
+    # When the look-back hits a pruned ancestor before a full window or genesis,
+    # the consensus target is UNDERIVABLE (a freshly window-synced node must not
+    # disagree with full-history peers) -> None, and _validate skips the check.
+    sc = Sharechain(window=3)                 # retention 9 -> early shares get pruned
+    g = _genesis(sc)
+    prev = g
+    for h in range(1, 15):
+        s = mk(prev.share_id(), h, miner=f"prl{h}")
+        add(sc, s)
+        prev = s
+    assert sc.expected_target(prev.share_id()) is None     # walk hits the pruned gap
+    assert add(sc, mk(prev.share_id(), 15, miner="prlX")).accepted  # check skipped
 
 
 if __name__ == "__main__":

@@ -104,5 +104,8 @@ A faster CPU helps proportionally up to ~16 effective threads; a GPU/accelerated
 is not available in the upstream plonky2 build (CPU only).
 
 > **Status:** validated on the public Pearl testnet — independent operators' shares
-> cross-verify and real blocks pay multiple operators proportionally. Mainnet adds
-> `share_target` calibration and per-miner vardiff (on the roadmap).
+> cross-verify and real blocks pay multiple operators proportionally. The share target
+> now retargets by consensus (~1 share / 10 s pool-wide) and coinbase values are
+> validated against Pearl's exact emission schedule. Mainnet adds per-miner vardiff and
+> transaction-fee collection (on the roadmap); the full knob list is in the README's
+> [Configuration reference](../README.md#configuration-reference).

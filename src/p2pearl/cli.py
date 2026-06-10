@@ -47,7 +47,9 @@ def main(argv: list[str] | None = None) -> int:
     dp.add_argument("--p2p-port", type=int, default=37900, help="P2P port (default 37900)")
     dp.add_argument("--peer", action="append", metavar="HOST:PORT",
                     help="connect to a peer node for share gossip (repeatable)")
-    dp.add_argument("--share-target", help="sidechain share target as int/hex (default: built-in placeholder)")
+    dp.add_argument("--share-target", help="override the sidechain GENESIS bootstrap share target as int/hex "
+                                           "(CONSENSUS: every node on the sidechain must use the same value; "
+                                           "after genesis the target retargets automatically)")
     dp.add_argument("--pause-cmd", metavar="CMD",
                     help="shell command run just before the ZK prove of a found block "
                          "(e.g. pause a co-located CPU miner so the prove runs contention-free)")

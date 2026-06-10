@@ -20,19 +20,25 @@ ADDRESS_HRP = "prl"                      # bech32m P2TR human-readable part (mai
 PARENT_RPC_DEFAULT_URL = "http://127.0.0.1:44107"
 
 # --- P2Pearl sidechain consensus (the "sharechain") ---
-SIDECHAIN_VERSION = 2          # v2: share carries coinbase_version + coinbase_value (peer header reconstruction)
+SIDECHAIN_VERSION = 3          # v3: consensus share-target retarget + subsidy-exact coinbase_value
 SHARE_TARGET_TIME_SECONDS = 10           # one share every ~10s on average (per-pool difficulty)
 PPLNS_WINDOW_SHARES = 1000               # reward look-back; tune to ~a few parent blocks of work
 UNCLE_BLOCK_DEPTH = 3                    # an uncle may be referenced up to N sidechain heights back
 UNCLE_PENALTY_PERCENT = 20               # uncle weight = difficulty * (100 - penalty) // 100
 MIN_PAYOUT_GRAINS = 100_000             # below this a miner is skipped this block; shares persist in-window
 
-# Sidechain difficulty retarget clamps (multiplicative bound per share)
-RETARGET_MAX_STEP = 4.0
-RETARGET_MIN_STEP = 0.25
-
 # The largest possible 256-bit target (difficulty 1 ceiling).
 MAX_TARGET = (1 << 256) - 1
+
+# Sidechain difficulty retarget. The share target a share MUST carry is derived
+# deterministically from the chain it extends (see Sharechain.expected_target):
+# estimated pool work-rate over the last RETARGET_WINDOW_SHARES, aimed at one share
+# per SHARE_TARGET_TIME_SECONDS, clamped to move at most RETARGET_CLAMP x per share.
+# Integer arithmetic only — these are consensus.
+RETARGET_WINDOW_SHARES = 60              # look-back (in shares) for the work-rate estimate
+RETARGET_CLAMP = 4                       # max per-share target movement (both directions)
+BOOTSTRAP_SHARE_TARGET = MAX_TARGET // 64   # genesis difficulty 64; the retarget takes over from there
+MAX_TIMESTAMP_DRIFT_SECONDS = 300        # reject shares stamped further than this into the future
 
 
 @dataclass(frozen=True)

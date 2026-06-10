@@ -22,16 +22,16 @@ import struct
 from p2pearl import config
 from p2pearl.consensus.pplns import compute_pplns_payouts
 from p2pearl.consensus.sharechain import Sharechain
+from p2pearl.consensus.subsidy import block_subsidy
 from p2pearl.daemon import ParentTemplate, PoolNode
 from p2pearl.p2p.node import P2PNode
 from p2pearl.stratum.server import StratumServer
 
-SHARE_TARGET = 1 << 248
 GRAIN = config.GRAIN_PER_PEARL
 # A stand-in parent block template (what pearld's getblocktemplate would return).
 TEMPLATE = ParentTemplate(
     height=42_000, prev_block=b"\x11" * 32, bits=0x1E01FFFF,
-    curtime=1_777_270_000, coinbase_value=5 * GRAIN,    # 5 PRL subsidy
+    curtime=1_777_270_000, coinbase_value=block_subsidy(42_000),   # the real h42000 subsidy
 )
 
 # Three demo miners (valid-looking bech32m P2TR addresses).
@@ -74,7 +74,7 @@ class Pool:
             sharechain=self.sharechain, verify_incoming=lambda s, p: True,
             host="127.0.0.1", port=0, on_new_share=self._on_gossiped_share)
         self.node = PoolNode(
-            sharechain=self.sharechain, share_target=SHARE_TARGET,
+            sharechain=self.sharechain,
             make_header=_fake_make_header,
             verify_share=lambda *a: True, verify_block=verify_block,
             assemble_block=lambda ctx, proof: "b10c4" * 8,

@@ -25,11 +25,14 @@ hardening left for integration.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 from .. import config
+from .difficulty import retarget_target
 from .pplns import uncle_weight
 from .share import ShareBlock
+from .subsidy import block_subsidy
 
 # The predecessor id of a genesis share (no parent).
 GENESIS_PREV = b"\x00" * 32
@@ -57,10 +60,16 @@ class Sharechain:
         window: int = config.PPLNS_WINDOW_SHARES,
         uncle_depth: int = config.UNCLE_BLOCK_DEPTH,
         uncle_penalty_percent: int = config.UNCLE_PENALTY_PERCENT,
+        bootstrap_target: int = config.BOOTSTRAP_SHARE_TARGET,
+        share_time: int = config.SHARE_TARGET_TIME_SECONDS,
+        retarget_window: int = config.RETARGET_WINDOW_SHARES,
     ) -> None:
         self.window = window
         self.uncle_depth = uncle_depth
         self.uncle_penalty_percent = uncle_penalty_percent
+        self.bootstrap_target = bootstrap_target
+        self.share_time = share_time
+        self.retarget_window = retarget_window
         # Keep enough history for a full-window reorg plus a full PPLNS walk on the
         # new tip, plus uncle reach. Shares (and proofs) below this are pruned.
         self._retention = 2 * window + uncle_depth
@@ -97,13 +106,49 @@ class Sharechain:
         entry = self._entries.get(share_id)
         return entry.cumulative_difficulty if entry else 0
 
-    def is_valid_successor(self, share: ShareBlock) -> bool:
+    def is_valid_successor(self, share: ShareBlock, now: float | None = None) -> bool:
         """True if ``share`` would be accepted right now (no insertion)."""
-        return self._validate(share)[0]
+        return self._validate(share, now)[0]
+
+    def expected_target(self, prev_share_id: bytes) -> int | None:
+        """The share_target consensus REQUIRES of a share extending ``prev_share_id``.
+
+        Deterministic from the chain alone, so the finder (``build_job_for``) and
+        every verifying peer (``_validate``) derive the identical value: the
+        bootstrap target for a genesis share, then :func:`retarget_target` over
+        the work-rate of the last ``retarget_window`` shares ending at the parent.
+
+        Returns ``None`` when the target CANNOT be derived deterministically:
+        unknown parent, or the look-back hits a pruned/unsynced ancestor before
+        reaching a full window or genesis. The latter happens only near a
+        window-sync base — a node must not derive a target from a truncated
+        window (full-history peers would derive a different one); it skips the
+        check there and still verifies the PoW at the stamped target.
+        """
+        if prev_share_id == GENESIS_PREV:
+            return self.bootstrap_target
+        entry = self._entries.get(prev_share_id)
+        if entry is None:
+            return None
+        shares = [entry.share]
+        cur = entry.share.prev_share_id
+        while cur != GENESIS_PREV and len(shares) < self.retarget_window:
+            e = self._entries.get(cur)
+            if e is None:
+                return None  # truncated history: cannot derive the consensus target
+            shares.append(e.share)
+            cur = e.share.prev_share_id
+        if len(shares) < 2:
+            return entry.share.share_target  # no interval to measure yet — carry
+        work = sum(s.difficulty() for s in shares[:-1])  # work mined during the span
+        span = shares[0].timestamp - shares[-1].timestamp
+        return retarget_target(
+            entry.share.share_target, work, span, self.share_time, config.RETARGET_CLAMP)
 
     # ------------------------------------------------------------------ mutation
     def add_share(
-        self, share: ShareBlock, *, verified: bool, proof: bytes | None = None
+        self, share: ShareBlock, *, verified: bool, proof: bytes | None = None,
+        now: float | None = None,
     ) -> AddResult:
         """Validate and insert ``share``.
 
@@ -114,7 +159,7 @@ class Sharechain:
         if not verified:
             return AddResult(False, False, "not verified")
 
-        ok, reason = self._validate(share)
+        ok, reason = self._validate(share, now)
         if not ok:
             return AddResult(False, False, reason)
 
@@ -176,12 +221,18 @@ class Sharechain:
         return sorted(weights.items(), key=lambda kv: (-kv[1], kv[0]))
 
     # ------------------------------------------------------------------ internal
-    def _validate(self, share: ShareBlock) -> tuple[bool, str]:
+    def _validate(self, share: ShareBlock, now: float | None = None) -> tuple[bool, str]:
+        if now is None:
+            now = time.time()
         sid = share.share_id()
         if sid in self._entries:
             return False, "duplicate"
         if share.version != config.SIDECHAIN_VERSION:
             return False, "bad version"
+        if share.timestamp > now + config.MAX_TIMESTAMP_DRIFT_SECONDS:
+            return False, "timestamp too far in future"
+        if share.coinbase_value != block_subsidy(share.parent_height):
+            return False, "bad coinbase value"
         if len(set(share.uncle_ids)) != len(share.uncle_ids):
             return False, "duplicate uncle"
         if sid in share.uncle_ids:
@@ -192,6 +243,8 @@ class Sharechain:
                 return False, "genesis height != 0"
             if share.uncle_ids:
                 return False, "genesis with uncles"
+            if share.share_target != self.bootstrap_target:
+                return False, "bad share target"
             return True, ""
 
         parent_entry = self._entries.get(share.prev_share_id)
@@ -204,6 +257,9 @@ class Sharechain:
             return False, "timestamp regression"
         if share.parent_height < parent.parent_height:
             return False, "parent height regression"
+        expected = self.expected_target(share.prev_share_id)
+        if expected is not None and share.share_target != expected:
+            return False, "bad share target"
 
         ancestors, ancestor_uncles = self._recent(share.prev_share_id, self.uncle_depth + 1)
         lo = share.sidechain_height - self.uncle_depth

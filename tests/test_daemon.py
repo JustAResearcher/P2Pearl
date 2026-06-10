@@ -53,7 +53,6 @@ def _node(sc, *, verify_share=True, verify_block=False, assemble="BLOCKHEX",
           submit_block=None, broadcast_share=None, broadcast_block=None, stratum=None):
     return PoolNode(
         sharechain=sc,
-        share_target=SHARE_TARGET,
         make_header=_fake_make_header,
         verify_share=(lambda *a: verify_share),
         verify_block=(lambda *a: verify_block),
@@ -70,7 +69,7 @@ def _node(sc, *, verify_share=True, verify_block=False, assemble="BLOCKHEX",
 # --------------------------------------------------------------------------- #
 
 def test_build_job_for_creates_candidate():
-    sc = Sharechain(window=10)
+    sc = Sharechain(window=10, bootstrap_target=SHARE_TARGET)
     node = _node(sc)
     node.set_template(TEMPLATE)
     spec = node.build_job_for(ADDR_A)
@@ -107,8 +106,9 @@ def test_verify_incoming_rejects_forged_payout_set():
     from p2pearl.consensus.share import ShareBlock
     from p2pearl.daemon import _make_verify_incoming
     verify = _make_verify_incoming(Sharechain(window=10), min_payout=0)
+    from p2pearl.config import SIDECHAIN_VERSION
     forged = ShareBlock(
-        version=2, sidechain_height=0, prev_share_id=GENESIS_PREV,
+        version=SIDECHAIN_VERSION, sidechain_height=0, prev_share_id=GENESIS_PREV,
         parent_prev_block=b"\x00" * 32, parent_height=1, timestamp=1000,
         share_target=SHARE_TARGET, block_nbits=0x1E01FFFF,
         coinbase_version=0x20000000, coinbase_value=5_000_000_000,
@@ -182,7 +182,7 @@ async def _flood_flow():
         return "DEADBEEF"
 
     node = PoolNode(
-        sharechain=sc, share_target=SHARE_TARGET, make_header=_fake_make_header,
+        sharechain=sc, make_header=_fake_make_header,
         verify_share=(lambda *a: True), verify_block=(lambda *a: True),
         assemble_block=assemble, submit_block=sblock, broadcast_block=bblock,
         pre_assemble=pre, post_assemble=post)
@@ -212,8 +212,9 @@ async def _flood_flow():
 # --------------------------------------------------------------------------- #
 
 def _gossip_share(parent_prev=TEMPLATE.prev_block, height=0, prev=GENESIS_PREV, addr=ADDR_B):
+    from p2pearl.config import SIDECHAIN_VERSION
     return ShareBlock(
-        version=2, sidechain_height=height, prev_share_id=prev,
+        version=SIDECHAIN_VERSION, sidechain_height=height, prev_share_id=prev,
         parent_prev_block=parent_prev, parent_height=TEMPLATE.height, timestamp=TEMPLATE.curtime,
         share_target=SHARE_TARGET, block_nbits=TEMPLATE.bits, coinbase_version=TEMPLATE.version,
         coinbase_value=TEMPLATE.coinbase_value, miner_address=addr, payout_set_hash=b"\x00" * 32)
@@ -227,7 +228,7 @@ def _collab_node(sc, assembled, sblock, verify_block=True):
     def mk(share):
         return (b"\x01" * 76, {"sid": share.share_id()})
     return PoolNode(
-        sharechain=sc, share_target=SHARE_TARGET, make_header=_fake_make_header,
+        sharechain=sc, make_header=_fake_make_header,
         verify_share=(lambda *a: True), verify_block=(lambda *a: verify_block),
         assemble_block=assemble, submit_block=sblock, make_header_from_share=mk)
 
