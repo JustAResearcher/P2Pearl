@@ -37,8 +37,10 @@ Messages (newline-delimited JSON, ``t`` = type):
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 
@@ -54,6 +56,18 @@ MAX_STORED_PROOFS = 4096      # bound the on-demand proof cache
 SYNC_LIMIT = 2048             # max shares per window sync
 SYNC_BATCH = 8                # shares per 'shares' message — each proof is ~137-370 KB,
                               # so bundling the whole window in one line would exceed READ_LIMIT
+MAX_BLOCK_HEX = 2_000_000     # cap a relayed 'block' payload (a real Pearl block is ~120 KB hex)
+MAX_BLOCKS_SEEN = 512         # bounded LRU of recently-relayed block hashes (storm guard)
+# Per-peer rate caps on the EXPENSIVE request handlers (those that send data back —
+# the amplification vectors). Fixed window: (max served per window, window seconds).
+# A legit peer needs a handful; an attacker is throttled + dropped past the hard cap.
+RATE_LIMITS = {
+    "getshares": (30, 10.0),  # each is a full window walk + up to SYNC_LIMIT proof sends
+    "getproof": (2000, 10.0),  # each sends one 137-370 KB proof (also drain-backpressured)
+    "block": (200, 10.0),     # relayed broadcasts
+    "hello": (10, 10.0),
+}
+HARD_RATE_STRIKES = 5         # consecutive over-limit hits on one kind -> drop the peer
 
 VerifyIncoming = Callable[[ShareBlock, str], bool]
 OnNewShare = Callable[[ShareBlock], Awaitable[None]]
@@ -72,11 +86,28 @@ class _Peer:
         self.peer_id = peer_id
         self.listen_addr: tuple[str, int] | None = None
         self._send_lock = asyncio.Lock()
+        self._buckets: dict[str, list] = {}   # kind -> [window_start, count]
+        self.strikes = 0                      # over-limit hits (any kind), in a row
 
     async def send(self, msg: dict) -> None:
         async with self._send_lock:
             self.writer.write(_encode(msg))
             await self.writer.drain()
+
+    def allow(self, kind: str, now: float) -> bool:
+        """Fixed-window rate gate for an expensive request kind; True iff under cap."""
+        limit, window = RATE_LIMITS[kind]
+        b = self._buckets.get(kind)
+        if b is None or now - b[0] >= window:
+            self._buckets[kind] = [now, 1]
+            self.strikes = 0
+            return True
+        if b[1] >= limit:
+            self.strikes += 1
+            return False
+        b[1] += 1
+        self.strikes = 0
+        return True
 
 
 class P2PNode:
@@ -102,6 +133,7 @@ class P2PNode:
         self._known_addrs: set[tuple[str, int]] = set()
         self._proofs: "OrderedDict[str, str]" = OrderedDict()   # share_id hex -> proof b64
         self._pending: dict[str, ShareBlock] = {}               # announced, awaiting proof
+        self._blocks_seen: "OrderedDict[bytes, bool]" = OrderedDict()  # relayed-block LRU (storm guard)
         self._server: asyncio.AbstractServer | None = None
         self._peer_seq = 0
         self._tasks: set[asyncio.Task] = set()
@@ -147,6 +179,7 @@ class P2PNode:
         await self._announce(share, exclude=None)
 
     async def broadcast_block(self, block_hex: str) -> None:
+        self._seen_block(block_hex)                  # our own block: don't relay it back to us
         await self._broadcast({"t": "block", "block": block_hex}, exclude=None)
 
     # --- connection handling ------------------------------------------------ #
@@ -178,7 +211,8 @@ class P2PNode:
                     msg = json.loads(line)
                 except Exception:
                     continue
-                await self._dispatch(peer, msg)
+                if not await self._dispatch(peer, msg):
+                    break
         except (ConnectionError, OSError):
             pass
         except ValueError:        # readline LimitOverrunError: oversized line -> drop peer
@@ -197,14 +231,22 @@ class P2PNode:
             "tip": tip.hex() if tip else "", "height": self.sharechain.height(),
         })
 
-    async def _dispatch(self, peer: _Peer, msg: dict) -> None:
-        handler = _HANDLERS.get(msg.get("t"))
+    async def _dispatch(self, peer: _Peer, msg: dict) -> bool:
+        """Handle one message. Returns False if the peer should be dropped."""
+        kind = msg.get("t")
+        handler = _HANDLERS.get(kind)
         if handler is None:
-            return
+            return True
+        if kind in RATE_LIMITS and not peer.allow(kind, time.monotonic()):
+            if peer.strikes >= HARD_RATE_STRIKES:
+                _LOGGER.warning("peer %d kept flooding %r; dropping", peer.peer_id, kind)
+                return False
+            return True                              # over the window cap: ignore this one
         try:
             await handler(self, peer, msg)
         except Exception:
-            _LOGGER.exception("p2p handler %s failed", msg.get("t"))
+            _LOGGER.exception("p2p handler %s failed", kind)
+        return True
 
     # --- message handlers --------------------------------------------------- #
     async def _h_hello(self, peer: _Peer, msg: dict) -> None:
@@ -310,8 +352,11 @@ class P2PNode:
 
     async def _h_block(self, peer: _Peer, msg: dict) -> None:
         block_hex = msg.get("block")
-        if not block_hex:
+        # Reject junk early; cap the size so a peer can't fan out huge payloads.
+        if not isinstance(block_hex, str) or not (0 < len(block_hex) <= MAX_BLOCK_HEX):
             return
+        if self._seen_block(block_hex):
+            return                                   # already relayed: stops a broadcast storm
         if self._on_block is not None:
             await self._on_block(block_hex)
         await self._broadcast({"t": "block", "block": block_hex}, exclude=peer)
@@ -322,6 +367,17 @@ class P2PNode:
         self._proofs.move_to_end(sid)
         while len(self._proofs) > MAX_STORED_PROOFS:
             self._proofs.popitem(last=False)
+
+    def _seen_block(self, block_hex: str) -> bool:
+        """Record a block by hash; return True if it was ALREADY seen (a repeat)."""
+        h = hashlib.sha256(block_hex.encode("ascii", "ignore")).digest()
+        if h in self._blocks_seen:
+            self._blocks_seen.move_to_end(h)
+            return True
+        self._blocks_seen[h] = True
+        while len(self._blocks_seen) > MAX_BLOCKS_SEEN:
+            self._blocks_seen.popitem(last=False)
+        return False
 
     def _window_shares(self, from_height: int) -> list[ShareBlock]:
         out: list[ShareBlock] = []

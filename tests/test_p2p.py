@@ -7,6 +7,7 @@ pearl_mining is needed; the sharechain and gossip protocol are exercised for rea
 
 import asyncio
 import base64
+import json
 import os
 import sys
 
@@ -252,6 +253,98 @@ async def _dedupe():
     finally:
         await a.stop()
         await b.stop()
+
+
+# --------------------------------------------------------------------------- #
+# DoS hardening (mirrors the P2Pool June-2026 P2P-server fixes)
+# --------------------------------------------------------------------------- #
+
+def test_block_relay_deduped_no_storm():
+    asyncio.run(_block_dedup())
+
+
+async def _block_dedup():
+    # A 3-node cycle a->b->c->a must NOT loop a block forever: each node relays a
+    # given block at most once (LRU of seen block hashes).
+    got = []
+
+    async def on_block(h):
+        got.append(h)
+
+    a, b, c = _node(), _node(on_block=on_block), _node()
+    for n in (a, b, c):
+        await n.start()
+    try:
+        await b.connect("127.0.0.1", a.port)
+        await c.connect("127.0.0.1", b.port)
+        await a.connect("127.0.0.1", c.port)              # close the cycle
+        assert await _wait_until(lambda: a.peer_count and b.peer_count and c.peer_count)
+        await a.broadcast_block("00aabbccdd")
+        await asyncio.sleep(0.4)
+        assert got.count("00aabbccdd") == 1               # b saw it exactly once, no storm
+    finally:
+        for n in (a, b, c):
+            await n.stop()
+
+
+def test_block_oversize_and_junk_rejected():
+    asyncio.run(_block_junk())
+
+
+async def _block_junk():
+    from p2pearl.p2p.node import MAX_BLOCK_HEX
+    got = []
+
+    async def on_block(h):
+        got.append(h)
+
+    a, b = _node(), _node(on_block=on_block)
+    await a.start()
+    await b.start()
+    try:
+        await b.connect("127.0.0.1", a.port)
+        assert await _wait_until(lambda: a.peer_count >= 1)
+        await a._broadcast({"t": "block", "block": "ab" * (MAX_BLOCK_HEX)}, exclude=None)  # too big
+        await a._broadcast({"t": "block", "block": 12345}, exclude=None)                   # not a str
+        await asyncio.sleep(0.3)
+        assert got == []                                   # neither was accepted/relayed
+    finally:
+        await a.stop()
+        await b.stop()
+
+
+def test_rate_limit_drops_flooding_peer():
+    asyncio.run(_rate_limit())
+
+
+async def _rate_limit():
+    # Hammering an expensive request kind past its window cap + strikes drops the peer.
+    from p2pearl.p2p.node import HARD_RATE_STRIKES, RATE_LIMITS, P2PNode
+    a = _node()
+    await a.start()
+    rb, wb = None, None
+    try:
+        rb, wb = await asyncio.open_connection("127.0.0.1", a.port)
+        await asyncio.wait_for(rb.readline(), timeout=5)   # server hello
+        cap, _window = RATE_LIMITS["getproof"]
+        for _ in range(cap + HARD_RATE_STRIKES + 5):
+            wb.write((json.dumps({"t": "getproof", "id": "00"}) + "\n").encode())
+        await wb.drain()
+        # the server drops the connection once strikes exceed the threshold
+        assert await _wait_until(lambda: a.peer_count == 0, timeout=5.0)
+    finally:
+        if wb is not None:
+            wb.close()
+        await a.stop()
+
+
+def test_rate_limit_allows_normal_use():
+    from p2pearl.p2p.node import _Peer
+    p = _Peer(None, None, 1)
+    # A handful of getshares in the window are fine (well under the cap).
+    assert all(p.allow("getshares", now=100.0 + i * 0.01) for i in range(5))
+    # A fresh window resets the count.
+    assert p.allow("getshares", now=200.0)
 
 
 if __name__ == "__main__":
