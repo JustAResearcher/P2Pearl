@@ -77,6 +77,10 @@ already bundles `pearl_mining` + the whole coinbase stack. Download it, run it (
 control panel opens), fill in the RPC fields for your `pearld`, click **Test pearld**,
 then **Start node**. Done.
 
+Live-node testing after Pearl's June 2026 MoE hard fork requires `pearld` 1.1.0 or
+newer. If the GUI-managed node is older, **Start node** now stops immediately with an
+upgrade message instead of waiting for a node that cannot sync v2 certificate blocks.
+
 **From source** (only if you want to build it yourself) — prereqs: Python 3.12+,
 [Rust](https://rustup.rs) with the MSVC toolchain, git:
 
@@ -98,7 +102,8 @@ p2pearl gui        # or: p2pearl daemon --rpc-url http://<pearld-host>:44109 ...
   **"Run pearld for me"** in the control panel and Start — it extracts the node to
   `~/.p2pearl/bin`, runs it with your RPC credentials (chain data in
   `~/.p2pearl/pearld-data`), shows sync progress, starts the pool when ready, and
-  shuts it down cleanly (via the `stop` RPC) when you close the window.
+  shuts it down cleanly (via the `stop` RPC) when you close the window. The bundled
+  node must be `pearld` 1.1.0 or newer for current mainnet/testnet blocks.
 - **Download it separately**: `pearld-windows-x86_64.zip` is attached to the
   [release](https://github.com/JustAResearcher/P2Pearl/releases/latest) (built from
   stock upstream source; ISC license included). Unzip and run:

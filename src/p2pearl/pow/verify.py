@@ -38,7 +38,8 @@ def meets_target(hash_jackpot_le: bytes, target: int) -> bool:
     return int.from_bytes(hash_jackpot_le, "little") <= target
 
 
-def verify_share(incomplete_header_bytes: bytes, plain_proof_b64: str, share_nbits: int) -> bool:
+def verify_share(incomplete_header_bytes: bytes, plain_proof_b64: str, share_nbits: int,
+                 cert_version: int | None = None) -> bool:
     """Verify a submitted share's plain proof against the SHARE target.
 
     A share clears the easy share target, not the block ``nbits`` embedded in the
@@ -64,6 +65,10 @@ def verify_share(incomplete_header_bytes: bytes, plain_proof_b64: str, share_nbi
     # enforces the 76-byte layout and reverses prev_block/merkle_root back to the
     # internal orientation that job_key = blake3(header || config) expects.
     header = pm.IncompleteBlockHeader.from_bytes(incomplete_header_bytes)
+    versioned = getattr(pm, "verify_plain_proof_for_cert_version", None)
+    if versioned is not None and cert_version is not None:
+        ok, _msg = versioned(cert_version, header, proof, nbits_override=share_nbits)
+        return bool(ok)
     native = getattr(pm, "verify_plain_proof", None)
     if native is not None:
         try:
@@ -83,7 +88,8 @@ def verify_share(incomplete_header_bytes: bytes, plain_proof_b64: str, share_nbi
     return bool(ok)
 
 
-def verify_block_solution(incomplete_header_bytes: bytes, plain_proof_b64: str) -> bool:
+def verify_block_solution(incomplete_header_bytes: bytes, plain_proof_b64: str,
+                          cert_version: int | None = None) -> bool:
     """Verify a plain proof at the BLOCK target (the header's own ``nbits``).
 
     Used only on the block-found path: when a share also clears the parent block
@@ -94,5 +100,9 @@ def verify_block_solution(incomplete_header_bytes: bytes, plain_proof_b64: str) 
     pm = _pearl_mining()
     proof = pm.PlainProof.from_base64(plain_proof_b64)
     header = pm.IncompleteBlockHeader.from_bytes(incomplete_header_bytes)
+    versioned = getattr(pm, "verify_plain_proof_for_cert_version", None)
+    if versioned is not None and cert_version is not None:
+        ok, _msg = versioned(cert_version, header, proof)
+        return bool(ok)
     ok, _msg = pm.verify_plain_proof(header, proof)
     return bool(ok)

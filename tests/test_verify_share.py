@@ -95,6 +95,39 @@ def test_verify_share_accepted(monkeypatch):
     assert calls["nbits"] == 0x1E01FFFF
 
 
+def test_verify_share_uses_cert_version_dispatcher(monkeypatch):
+    calls = {}
+    mod = _make_fake_module(lambda *_: (_ for _ in ()).throw(AssertionError("old path")))
+
+    def versioned(cert_version, header, proof, nbits_override=None):
+        calls["cert_version"] = cert_version
+        calls["nbits"] = nbits_override
+        calls["proof"] = proof
+        return (True, "ok")
+
+    mod.verify_plain_proof_for_cert_version = versioned
+    verify = _load_verify(monkeypatch, mod)
+    assert verify.verify_share(HEADER_76, PROOF_B64, 0x1E01FFFF, cert_version=2) is True
+    assert calls["cert_version"] == 2
+    assert calls["nbits"] == 0x1E01FFFF
+    assert calls["proof"].tag == PROOF_B64
+
+
+def test_verify_block_uses_cert_version_dispatcher(monkeypatch):
+    calls = {}
+    mod = _make_fake_module(lambda *_: (_ for _ in ()).throw(AssertionError("old path")))
+
+    def versioned(cert_version, header, proof, nbits_override=None):
+        calls["cert_version"] = cert_version
+        calls["nbits"] = nbits_override
+        return (True, "ok")
+
+    mod.verify_plain_proof_for_cert_version = versioned
+    verify = _load_verify(monkeypatch, mod)
+    assert verify.verify_block_solution(HEADER_76, PROOF_B64, cert_version=2) is True
+    assert calls == {"cert_version": 2, "nbits": None}
+
+
 def test_verify_share_rejected_returns_false(monkeypatch):
     def fake_verify(header, proof, nbits):
         return (False, "Jackpot condition not satisfied: hash does not meet difficulty target")

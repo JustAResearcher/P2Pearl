@@ -38,8 +38,8 @@ rustup target add x86_64-pc-windows-gnu
 
 Write-Host "== zk-pow verifier circuit cache =="
 Push-Location (Join-Path $PearlDir "zk-pow")
-if (-not (Test-Path "src\circuit\cache.bin")) {
-    cargo run --release --no-default-features --bin build_cache src/circuit/cache.bin
+if (-not (Test-Path "src\circuit\v2_cache.bin") -or -not (Test-Path "src\v1\v1_cache.bin")) {
+    cargo run --release --no-default-features --bin build_cache src/circuit/v2_cache.bin src/v1/v1_cache.bin
     if ($LASTEXITCODE -ne 0) { throw "circuit cache build failed" }
 }
 Pop-Location

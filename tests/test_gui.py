@@ -8,7 +8,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from p2pearl.gui import (  # noqa: E402
     DEFAULTS,
     build_daemon_args,
+    format_version,
     load_settings,
+    managed_pearld_too_old,
     miner_command,
     save_settings,
     self_command,
@@ -65,6 +67,14 @@ def test_miner_command_uses_port_and_wallet():
 def test_self_command_unfrozen():
     cmd = self_command()
     assert cmd[0] == sys.executable and cmd[-2:] == ["-m", "p2pearl"]
+
+
+def test_managed_pearld_version_guard():
+    assert managed_pearld_too_old((1, 0, 6))
+    assert not managed_pearld_too_old((1, 1, 0))
+    assert not managed_pearld_too_old(None)
+    assert format_version((1, 1, 0)) == "1.1.0"
+    assert format_version(None) == "unknown"
 
 
 def test_pearld_args_networks(tmp_path):

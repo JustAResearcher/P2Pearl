@@ -50,6 +50,7 @@ class ParentTemplate:
     coinbase_value: int                # GBT's subsidy + fees, in grains (informational —
                                        # jobs pay the EXACT subsidy; shares are coinbase-only)
     version: int = 0x20000000
+    required_cert_version: int = 1     # GBT requiredcertversion (1 pre-MoE fork, 2 after)
     witness_commitment: str | None = None        # GBT default_witness_commitment (hex)
     coinbaseaux_flags: str | None = None          # GBT coinbaseaux.flags (hex)
     transactions: list = field(default_factory=list)  # raw template txs (opaque to the orchestrator)
@@ -65,6 +66,7 @@ class ParentTemplate:
             curtime=int(gbt["curtime"]),
             coinbase_value=int(gbt["coinbasevalue"]),
             version=int(gbt.get("version", 0x20000000)),
+            required_cert_version=int(gbt.get("requiredcertversion", 1)),
             witness_commitment=gbt.get("default_witness_commitment"),
             coinbaseaux_flags=aux.get("flags"),
             transactions=list(gbt.get("transactions", [])),
@@ -83,8 +85,8 @@ def serialize_payouts(payouts: list[Payout]) -> bytes:
 # Injected adapter signatures.
 MakeHeader = Callable[["ParentTemplate", "list[Payout]", bytes], "tuple[str, Any]"]
 AssembleBlock = Callable[[Any, str], str]
-VerifyShare = Callable[[bytes, str, int], bool]
-VerifyBlock = Callable[[bytes, str], bool]
+VerifyShare = Callable[[bytes, str, int, int], bool]
+VerifyBlock = Callable[[bytes, str, int], bool]
 SubmitBlock = Callable[[str], Awaitable[Any]]
 BroadcastShare = Callable[[ShareBlock, str], Awaitable[None]]
 BroadcastBlock = Callable[[str], Awaitable[None]]
@@ -97,6 +99,7 @@ class _JobContext:
     candidate: ShareBlock
     header_ctx: Any
     payouts: list
+    cert_version: int
 
 
 class PoolNode:
@@ -189,7 +192,10 @@ class PoolNode:
             payout_set_hash=payout_set_hash,
         )
         header_hex, header_ctx = self._make_header(template, payouts, candidate.share_id())
-        ctx = _JobContext(candidate=candidate, header_ctx=header_ctx, payouts=payouts)
+        ctx = _JobContext(
+            candidate=candidate, header_ctx=header_ctx, payouts=payouts,
+            cert_version=template.required_cert_version,
+        )
         return (header_hex, share_target, s_height, ctx)
 
     # --- submit handling (the stratum submit_handler) ----------------------- #
@@ -201,7 +207,9 @@ class PoolNode:
         share_nbits = target_to_bits(submission.job.share_target)
 
         # 1. Cheap share-target verification (nbits override).
-        if not self._verify_share(header_bytes, submission.plain_proof_b64, share_nbits):
+        if not self._verify_share(
+            header_bytes, submission.plain_proof_b64, share_nbits, ctx.cert_version,
+        ):
             return SubmitResult(False, P.LOW_DIFF_CODE, "share does not meet target")
 
         # 2. Record the share on the sidechain (PoW already verified above).
@@ -216,7 +224,7 @@ class PoolNode:
 
         # 4. Block-found path: confirm at the BLOCK target with the UNMODIFIED verifier,
         #    then assemble (ZK-prove) the full Pearl block, submit it, and gossip it.
-        if self._verify_block(header_bytes, submission.plain_proof_b64):
+        if self._verify_block(header_bytes, submission.plain_proof_b64, ctx.cert_version):
             await self._assemble_and_submit(ctx, submission.plain_proof_b64)
 
         # 5. New sidechain tip -> rebuild every miner's job (new prev_share + PPLNS).
@@ -275,9 +283,14 @@ class PoolNode:
         if built is None:
             return                                       # forged payout set (already rejected upstream)
         header_bytes, header_ctx = built
-        if not self._verify_block(header_bytes, proof_b64):
+        if isinstance(header_ctx, dict):
+            header_ctx["cert_version"] = template.required_cert_version
+        if not self._verify_block(header_bytes, proof_b64, template.required_cert_version):
             return                                       # clears share target but not the block target
-        ctx = _JobContext(candidate=share, header_ctx=header_ctx, payouts=[])
+        ctx = _JobContext(
+            candidate=share, header_ctx=header_ctx, payouts=[],
+            cert_version=template.required_cert_version,
+        )
         await self._assemble_and_submit(ctx, proof_b64)
 
     # --- production poll loop ---------------------------------------------- #
@@ -335,7 +348,10 @@ def _production_make_header(template: ParentTemplate, payouts: list[Payout], sha
     header, coinbase_tx = _build_share_header(
         template.version, template.prev_block, template.curtime, template.bits,
         payouts, share_id, block_subsidy(template.height), template.height)
-    header_ctx = {"header": header, "coinbase_tx": coinbase_tx, "transactions": []}
+    header_ctx = {
+        "header": header, "coinbase_tx": coinbase_tx, "transactions": [],
+        "cert_version": template.required_cert_version,
+    }
     return bytes(header.to_bytes()).hex(), header_ctx
 
 
@@ -349,9 +365,17 @@ def _production_assemble_block(header_ctx: dict, plain_proof_b64: str) -> str:
 
     proof = pearl_mining.PlainProof.from_base64(plain_proof_b64)
     incomplete = header_ctx["header"]
-    zk_proof = pearl_mining.generate_proof(incomplete, proof)
+    cert_version = int(header_ctx.get("cert_version", 1))
+    generate = getattr(pearl_mining, "generate_proof_for_cert_version", None)
+    zk_proof = (generate(cert_version, incomplete, proof) if generate
+                else pearl_mining.generate_proof(incomplete, proof))
     pearl_header = PearlHeader(incomplete)
-    zk_cert = ZKCertificate.from_pearl_header(pearl_header, zk_proof)
+    try:
+        from pearl_gateway.blockchain_utils.zk_certificate import CertificateVersion  # type: ignore
+        zk_cert = ZKCertificate.from_pearl_header(
+            pearl_header, zk_proof, cert_version=CertificateVersion(cert_version))
+    except (ImportError, TypeError):
+        zk_cert = ZKCertificate.from_pearl_header(pearl_header, zk_proof)
     # PearlBlock serializes raw_txns as bytes (zk_cert | header | count | txs). The
     # coinbase is serialized WITH its witness; template txs arrive as raw GBT hex.
     coinbase_tx = header_ctx["coinbase_tx"]
@@ -391,7 +415,8 @@ def _reconstruct_share(sharechain: Sharechain, min_payout: int, share: ShareBloc
     return header, coinbase_tx, payouts
 
 
-def _make_verify_incoming(sharechain: Sharechain, min_payout: int):
+def _make_verify_incoming(sharechain: Sharechain, min_payout: int,
+                          cert_version_for_share: Callable[[ShareBlock], int] | None = None):
     """Build the production P2P ``verify_incoming(share, proof_b64) -> bool`` — reconstruct
     the exact header the finder mined and verify the proof at the SHARE target. The
     unit-tested P2P layer injects a fake."""
@@ -402,7 +427,11 @@ def _make_verify_incoming(sharechain: Sharechain, min_payout: int):
         if recon is None:
             return False
         header, _cb, _payouts = recon
-        return verify_share(bytes(header.to_bytes()), proof_b64, target_to_bits(share.share_target))
+        cert_version = cert_version_for_share(share) if cert_version_for_share else 1
+        return verify_share(
+            bytes(header.to_bytes()), proof_b64, target_to_bits(share.share_target),
+            cert_version,
+        )
 
     return verify_incoming
 
@@ -533,9 +562,16 @@ def build_production_node(cfg: config.DaemonConfig | None = None, share_target: 
     async def _on_new_share(_share):
         await stratum.refresh()                # a peer's share advanced the tip -> new jobs
 
+    def _cert_version_for_share(share: ShareBlock) -> int:
+        template = pool._template
+        if template is not None:
+            return template.required_cert_version
+        return 1
+
     p2p = P2PNode(
         sharechain=sharechain,
-        verify_incoming=_make_verify_incoming(sharechain, pool._min_payout),
+        verify_incoming=_make_verify_incoming(
+            sharechain, pool._min_payout, _cert_version_for_share),
         host=cfg.p2p_host, port=cfg.p2p_port, on_new_share=_on_new_share,
         on_block_candidate=pool.try_collaborative_submit)   # race to submit peers' block-clearing shares
     pool._broadcast_share = p2p.broadcast_share

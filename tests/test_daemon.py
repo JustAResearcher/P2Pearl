@@ -87,6 +87,18 @@ def test_build_job_none_without_template():
     assert node.build_job_for(ADDR_A) is None
 
 
+def test_parent_template_reads_required_cert_version():
+    gbt = {
+        "height": 1000,
+        "previousblockhash": "22" * 32,
+        "bits": "1e01ffff",
+        "curtime": 123,
+        "coinbasevalue": 5_000_000_000,
+        "requiredcertversion": 2,
+    }
+    assert ParentTemplate.from_gbt(gbt).required_cert_version == 2
+
+
 def test_build_production_node_wires_stratum_and_p2p():
     # `p2pearl daemon` must serve miners AND gossip to peers: build_production_node wires
     # a StratumServer (job source = build_job_for) + a P2PNode (broadcast hooks). No
@@ -144,6 +156,39 @@ async def _share_flow():
     assert len(sc) == 1 and sc.tip().miner_address == ADDR_A
     assert len(bshare.calls) == 1                 # share gossiped
     assert not bblock.calls and not sblock.calls  # not a block
+
+
+def test_handle_submit_passes_cert_version_to_verifiers():
+    asyncio.run(_cert_version_flow())
+
+
+async def _cert_version_flow():
+    sc = Sharechain(window=10)
+    seen = {}
+
+    def verify_share(*args):
+        seen["share_args"] = args
+        return True
+
+    def verify_block(*args):
+        seen["block_args"] = args
+        return False
+
+    node = PoolNode(
+        sharechain=sc, make_header=_fake_make_header,
+        verify_share=verify_share, verify_block=verify_block,
+        assemble_block=(lambda ctx, proof: "BLOCKHEX"), submit_block=_noop,
+    )
+    node.set_template(ParentTemplate(
+        height=TEMPLATE.height, prev_block=TEMPLATE.prev_block, bits=TEMPLATE.bits,
+        curtime=TEMPLATE.curtime, coinbase_value=TEMPLATE.coinbase_value,
+        required_cert_version=2,
+    ))
+    header_hex, target, height, ctx = node.build_job_for(ADDR_A)
+    job = StratumJob("00001000-0004", header_hex, target, height, ctx)
+    assert (await node.handle_submit(Submission(ADDR_A, "rigA", job, PROOF_B64))).accepted
+    assert seen["share_args"][-1] == 2
+    assert seen["block_args"][-1] == 2
 
 
 def test_handle_submit_block_path():

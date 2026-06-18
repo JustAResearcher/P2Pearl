@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -29,6 +30,7 @@ from .config import NodeRPCConfig
 SETTINGS_PATH = Path.home() / ".p2pearl" / "gui.json"
 PEARLD_INSTALL_DIR = Path.home() / ".p2pearl" / "bin"
 PEARLD_DATA_DIR = Path.home() / ".p2pearl" / "pearld-data"
+MIN_MANAGED_PEARLD_VERSION = (1, 1, 0)  # Pearl MoE hard fork needs v2 certificates.
 GUI_UNAVAILABLE = 2          # main() return code: tkinter/display missing — caller may fall back
 
 # Networks the managed pearld can run on ("regtest" is for tests/dev, not the UI).
@@ -130,6 +132,38 @@ def bundled_pearld_dir() -> Path | None:
 
 def _pearld_name() -> str:
     return "pearld.exe" if os.name == "nt" else "pearld"
+
+
+def pearld_version(exe: Path) -> tuple[int, int, int] | None:
+    """Return ``pearld --version`` as a tuple, or None if it cannot be read."""
+    creationflags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW
+    try:
+        proc = subprocess.run(
+            [str(exe), "--version"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            creationflags=creationflags,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = re.search(r"pearld version (\d+)\.(\d+)\.(\d+)", proc.stdout)
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def format_version(version: tuple[int, int, int] | None) -> str:
+    return "unknown" if version is None else ".".join(str(part) for part in version)
+
+
+def managed_pearld_too_old(version: tuple[int, int, int] | None) -> bool:
+    return version is not None and version < MIN_MANAGED_PEARLD_VERSION
 
 
 def ensure_pearld_installed(source_dir: Path | None = None,
@@ -453,6 +487,19 @@ def main() -> int:
                 "found on PATH. Untick 'Run pearld for me' and point the RPC URL at a "
                 "pearld you run yourself (see docs/running-a-node.md).")
             manage_var.set(False)
+            return False
+        version = pearld_version(exe)
+        if managed_pearld_too_old(version):
+            msg = (
+                f"Managed pearld is too old for the current Pearl network "
+                f"(found {format_version(version)}, need "
+                f"{format_version(MIN_MANAGED_PEARLD_VERSION)}+). Pearl's June 2026 "
+                "MoE hard fork requires v2 certificates. Install an updated P2Pearl "
+                "bundle, or untick 'Run pearld for me' and point the RPC URL at "
+                "pearld 1.1.0 or newer."
+            )
+            log(msg)
+            messagebox.showerror("P2Pearl", msg)
             return False
         flags = (0x08000000 | 0x00000200) if sys.platform == "win32" else 0  # NO_WINDOW | NEW_PROCESS_GROUP
         PEARLD_DATA_DIR.mkdir(parents=True, exist_ok=True)

@@ -64,7 +64,7 @@ class Pool:
             self.blocks_found += 1
             print(f"   [{name}]  *** BLOCK FOUND -> submitblock to pearld ({block_hex[:12]}...) ***")
 
-        def verify_block(_header, _proof):
+        def verify_block(_header, _proof, _cert_version=1):
             self._submits += 1
             return self._find_block_on is not None and self._submits == self._find_block_on
 
