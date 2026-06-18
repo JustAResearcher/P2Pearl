@@ -4,7 +4,7 @@
 
 P2Pearl is a mining pool with **no company behind it**: no operator, no account, no signup, and a **0 % fee**. When the pool finds a block, the block itself pays every recent miner their share, straight to their own wallet. There is nobody to take a cut, run off with funds, or get shut down — the same idea as Monero's P2Pool, built for Pearl.
 
-[![release](https://img.shields.io/github/v/release/JustAResearcher/P2Pearl)](https://github.com/JustAResearcher/P2Pearl/releases/latest) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE) ![tests](https://img.shields.io/badge/tests-123%20passing-brightgreen)
+[![release](https://img.shields.io/github/v/release/JustAResearcher/P2Pearl)](https://github.com/JustAResearcher/P2Pearl/releases/latest) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE) ![tests](https://img.shields.io/badge/tests-127%20passing-brightgreen)
 
 <p align="center"><img src="docs/img/gui.png" alt="The P2Pearl control panel" width="640"></p>
 
@@ -30,7 +30,7 @@ You don't install anything from P2Pearl — your existing miner just points at a
    SRBMiner-MULTI --algorithm pearlhash --pool <node-address>:3360 --wallet <your-prl1p...-address> --disable-cpu
    ```
 
-That's it. There is no account and no balance page: **when the pool finds a block, the block's own coinbase pays you directly**, proportional to the shares you contributed recently. Nothing to claim, nothing to withdraw, no fee taken. (Rewards smaller than 0.001 PRL roll over to the next block — never lost.)
+That's it. There is no account and no withdraw page: **when the pool finds a block, the block's own coinbase pays you directly**, proportional to the shares you contributed recently. Nothing to claim, nothing to withdraw, no fee taken. (Rewards smaller than 0.001 PRL roll over to the next block — never lost.) Pool operators can see a live **Payout estimate** panel in the GUI showing each wallet's current PPLNS share and next-block estimate.
 
 > Tip: anyone running the control panel can hand you the exact command — it's the **"Miners run:"** line at the bottom of the window, with their port and your placeholder pre-filled.
 

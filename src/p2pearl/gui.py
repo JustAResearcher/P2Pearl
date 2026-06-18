@@ -24,7 +24,7 @@ import sys
 import threading
 from pathlib import Path
 
-from . import __version__
+from . import __version__, config
 from .config import NodeRPCConfig
 
 SETTINGS_PATH = Path.home() / ".p2pearl" / "gui.json"
@@ -80,9 +80,19 @@ def save_settings(settings: dict, path: Path = SETTINGS_PATH) -> None:
         pass                     # persistence is best-effort, never fatal
 
 
+def normalize_settings(settings: dict) -> dict:
+    """Apply derived settings that should not be hand-edited in managed mode."""
+    s = {**DEFAULTS, **settings}
+    if s["network"] not in NETWORKS:
+        s["network"] = DEFAULTS["network"]
+    if s["manage_pearld"] == "1":
+        s["rpc_url"] = managed_rpc_url(s["network"])
+    return s
+
+
 def build_daemon_args(settings: dict) -> list[str]:
     """Map the settings dict onto `p2pearl daemon` CLI arguments."""
-    s = {**DEFAULTS, **settings}
+    s = normalize_settings(settings)
     args = ["daemon", "--rpc-url", s["rpc_url"].strip()]
     if s["rpc_user"].strip():
         args += ["--rpc-user", s["rpc_user"].strip()]
@@ -112,6 +122,40 @@ def miner_command(settings: dict) -> str:
     wallet = s["wallet"].strip() or "<your-prl1p...-address>"
     return (f"SRBMiner-MULTI --algorithm pearlhash --pool <this-machine-ip>:{port} "
             f"--wallet {wallet} --disable-cpu")
+
+
+def format_prl_amount(grains: int) -> str:
+    return f"{int(grains) / config.GRAIN_PER_PEARL:.8f}".rstrip("0").rstrip(".") or "0"
+
+
+def payout_stats_summary(snapshot: dict | None) -> str:
+    if not snapshot or not snapshot.get("addresses"):
+        return "No accepted shares yet."
+    reward = format_prl_amount(snapshot.get("block_reward_grains", 0))
+    return (f"PPLNS window: {snapshot.get('window_shares', 0)} / "
+            f"{snapshot.get('window_max', 0)} shares; next block reward: {reward} PRL")
+
+
+def payout_stats_rows(snapshot: dict | None, limit: int = 10) -> list[tuple[str, str, str, str]]:
+    if not snapshot:
+        return []
+    rows = []
+    min_payout = int(snapshot.get("min_payout_grains", 0))
+    for row in snapshot.get("addresses", [])[:limit]:
+        pct = int(row.get("percent_bps", 0)) / 100
+        estimated = int(row.get("estimated_grains", 0))
+        potential = int(row.get("potential_grains", 0))
+        if estimated == 0 and potential > 0 and min_payout:
+            payout = f"<{format_prl_amount(min_payout)} PRL"
+        else:
+            payout = f"{format_prl_amount(estimated)} PRL"
+        rows.append((
+            row.get("address", ""),
+            f"{pct:.2f}%",
+            payout,
+            f"{int(row.get('weight', 0)):,}",
+        ))
+    return rows
 
 
 def self_command() -> list[str]:
@@ -377,14 +421,17 @@ def main() -> int:
     ttk.Label(manage_row, text="starts + syncs the bundled Pearl node, then starts the pool",
               foreground="#888").pack(side="left", padx=(8, 0))
 
-    add_entry(node_box, 1, 0, "RPC URL", "rpc_url", width=34,
-              hint="44107 mainnet / 44109 testnet convention")
+    rpc_url_entry = add_entry(node_box, 1, 0, "RPC URL", "rpc_url", width=34,
+                              hint="44107 mainnet / 44109 testnet convention")
     add_entry(node_box, 2, 0, "RPC user", "rpc_user")
     add_entry(node_box, 3, 0, "RPC password", "rpc_pass", show="•")
 
     def _sync_managed_url(*_):
         if manage_var.get():
             fields["rpc_url"].set(managed_rpc_url(network_var.get()))
+            rpc_url_entry.configure(state="readonly")
+        else:
+            rpc_url_entry.configure(state="normal")
 
     manage_var.trace_add("write", _sync_managed_url)
     network_var.trace_add("write", _sync_managed_url)
@@ -440,7 +487,7 @@ def main() -> int:
         s["peers"] = peers_text.get("1.0", "end").strip()
         s["manage_pearld"] = "1" if manage_var.get() else "0"
         s["network"] = network_var.get()
-        return s
+        return normalize_settings(s)
 
     def log(line: str) -> None:
         log_text.configure(state="normal")
@@ -469,11 +516,20 @@ def main() -> int:
         status_var.set(f"{label} running (pid {proc.pid})")
         start_btn["state"] = demo_btn["state"] = "disabled"
         stop_btn["state"] = "normal"
+        update_payout_stats(None)
+        stats_summary_var.set("Waiting for accepted shares ...")
         log(f"--- {label} started: {' '.join(args)} ---")
 
         def reader():
             for line in proc.stdout:
-                events.put(("log", line))
+                if line.startswith(config.PAYOUT_STATS_PREFIX):
+                    try:
+                        payload = json.loads(line[len(config.PAYOUT_STATS_PREFIX):])
+                        events.put(("payout_stats", payload))
+                    except ValueError:
+                        events.put(("log", line))
+                else:
+                    events.put(("log", line))
             events.put(("exit", proc.wait()))
 
         threading.Thread(target=reader, daemon=True).start()
@@ -601,8 +657,32 @@ def main() -> int:
     fields["stratum_port"].trace_add("write", refresh_miner_cmd)
     fields["wallet"].trace_add("write", refresh_miner_cmd)
 
+    # ---- payout estimate -------------------------------------------------- #
+    stats_box = ttk.LabelFrame(outer, text=" Payout estimate (next block) ", padding=8)
+    stats_box.pack(fill="x", pady=(8, 0))
+    stats_summary_var = tk.StringVar(value=payout_stats_summary(None))
+    ttk.Label(stats_box, textvariable=stats_summary_var).pack(anchor="w")
+    stats_tree = ttk.Treeview(
+        stats_box, columns=("wallet", "share", "payout", "weight"), show="headings", height=4)
+    for col, label, width, anchor in (
+        ("wallet", "Wallet", 360, "w"),
+        ("share", "PPLNS share", 95, "e"),
+        ("payout", "Est. payout", 120, "e"),
+        ("weight", "Weight", 120, "e"),
+    ):
+        stats_tree.heading(col, text=label)
+        stats_tree.column(col, width=width, anchor=anchor, stretch=(col == "wallet"))
+    stats_tree.pack(fill="x", pady=(4, 0))
+
+    def update_payout_stats(snapshot: dict) -> None:
+        stats_summary_var.set(payout_stats_summary(snapshot))
+        for item in stats_tree.get_children():
+            stats_tree.delete(item)
+        for row in payout_stats_rows(snapshot):
+            stats_tree.insert("", "end", values=row)
+
     # ---- log pane ---------------------------------------------------------- #
-    log_text = scrolledtext.ScrolledText(outer, height=14, state="disabled",
+    log_text = scrolledtext.ScrolledText(outer, height=12, state="disabled",
                                          font=("Consolas", 9))
     log_text.pack(fill="both", expand=True, pady=(8, 0))
     log(f"P2Pearl v{__version__} control panel. Fill in your settings and click Start node —")
@@ -616,6 +696,8 @@ def main() -> int:
                 ev = events.get_nowait()
                 if ev[0] == "log":
                     log(ev[1])
+                elif ev[0] == "payout_stats":
+                    update_payout_stats(ev[1])
                 elif ev[0] == "exit":
                     log(f"--- {state['label']} exited (code {ev[1]}) ---")
                     state["proc"] = None

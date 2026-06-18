@@ -18,6 +18,7 @@ GRAIN_PER_PEARL = 100_000_000            # 1e8 base units ("grain")
 COINBASE_MATURITY = 100                  # blocks before a coinbase output is spendable
 ADDRESS_HRP = "prl"                      # bech32m P2TR human-readable part (mainnet; tprl/rprl on test nets)
 PARENT_RPC_DEFAULT_URL = "http://127.0.0.1:44107"
+PAYOUT_STATS_PREFIX = "P2PEARL_PAYOUT_STATS "
 
 # --- P2Pearl sidechain consensus (the "sharechain") ---
 SIDECHAIN_VERSION = 3          # v3: consensus share-target retarget + subsidy-exact coinbase_value

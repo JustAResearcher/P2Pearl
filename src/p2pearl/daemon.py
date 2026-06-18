@@ -22,6 +22,7 @@ Flow:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import struct
 import sys
@@ -80,6 +81,65 @@ def serialize_payouts(payouts: list[Payout]) -> bytes:
         addr = p.address.encode("ascii")
         out += struct.pack("<H", len(addr)) + addr + struct.pack("<Q", p.grains)
     return bytes(out)
+
+
+def payout_estimate_snapshot(
+    sharechain: Sharechain,
+    block_reward_grains: int,
+    min_payout_grains: int = config.MIN_PAYOUT_GRAINS,
+) -> dict:
+    """Current deterministic PPLNS estimate if the next parent block paid now."""
+    weights = sharechain.pplns_weights()
+    total_weight = sum(weight for _, weight in weights)
+    payouts = compute_pplns_payouts(block_reward_grains, weights, min_payout_grains)
+    payout_by_addr = {p.address: p.grains for p in payouts}
+    tip = sharechain.tip()
+    window_shares = min(tip.sidechain_height + 1, sharechain.window) if tip else 0
+    rows = []
+    for address, weight in weights:
+        potential = (block_reward_grains * weight) // total_weight if total_weight else 0
+        rows.append({
+            "address": address,
+            "weight": weight,
+            "percent_bps": (weight * 10_000) // total_weight if total_weight else 0,
+            "potential_grains": potential,
+            "estimated_grains": payout_by_addr.get(address, 0),
+        })
+    return {
+        "window_shares": window_shares,
+        "window_max": sharechain.window,
+        "block_reward_grains": block_reward_grains,
+        "min_payout_grains": min_payout_grains,
+        "total_weight": total_weight,
+        "addresses": rows,
+    }
+
+
+def _prl(grains: int) -> str:
+    return f"{grains / config.GRAIN_PER_PEARL:.8f}".rstrip("0").rstrip(".") or "0"
+
+
+def _short_addr(address: str) -> str:
+    return address if len(address) <= 18 else f"{address[:10]}...{address[-6:]}"
+
+
+def format_payout_estimate(snapshot: dict) -> str:
+    """Human one-line payout estimate for terminal users and GUI logs."""
+    rows = snapshot.get("addresses", [])
+    window = f"{snapshot.get('window_shares', 0)}/{snapshot.get('window_max', 0)}"
+    if not rows:
+        return f"  payout est  : window {window}; no accepted shares yet"
+    parts = []
+    for row in rows[:3]:
+        pct = row["percent_bps"] / 100
+        est = row["estimated_grains"]
+        if est == 0 and row["potential_grains"] > 0:
+            payout = f"<{_prl(snapshot['min_payout_grains'])} PRL"
+        else:
+            payout = f"{_prl(est)} PRL"
+        parts.append(f"{_short_addr(row['address'])}: {pct:.2f}% ~{payout}")
+    extra = "" if len(rows) <= 3 else f"; +{len(rows) - 3} more"
+    return f"  payout est  : window {window}; " + ", ".join(parts) + extra
 
 
 # Injected adapter signatures.
@@ -148,6 +208,15 @@ class PoolNode:
         if template.prev_block != prev:
             self._assembled_parents.clear()   # new parent tip -> a fresh block race
         self._template = template
+
+    def emit_payout_stats(self) -> None:
+        """Print current PPLNS payout estimate for the GUI and terminal operators."""
+        if self._template is None:
+            return
+        snapshot = payout_estimate_snapshot(
+            self.sharechain, block_subsidy(self._template.height), self._min_payout)
+        print(format_payout_estimate(snapshot), flush=True)
+        print(config.PAYOUT_STATS_PREFIX + json.dumps(snapshot, separators=(",", ":")), flush=True)
 
     # --- job building (called per-connection by the stratum) ---------------- #
     def build_job_for(self, worker_address: str | None):
@@ -223,6 +292,8 @@ class PoolNode:
         # 3. Gossip the share to peers.
         if self._broadcast_share is not None:
             await self._broadcast_share(ctx.candidate, submission.plain_proof_b64)
+
+        self.emit_payout_stats()
 
         # 4. Block-found path: confirm at the BLOCK target with the UNMODIFIED verifier,
         #    then assemble (ZK-prove) the full Pearl block, submit it, and gossip it.
@@ -562,6 +633,7 @@ def build_production_node(cfg: config.DaemonConfig | None = None, share_target: 
     # reconstructing its header (the same deterministic build the finder used) before
     # it is added or relayed -> a peer can forge neither the PoW nor the PPLNS split.
     async def _on_new_share(_share):
+        pool.emit_payout_stats()
         await stratum.refresh()                # a peer's share advanced the tip -> new jobs
 
     def _cert_version_for_share(share: ShareBlock) -> int:

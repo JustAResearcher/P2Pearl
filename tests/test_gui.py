@@ -12,6 +12,9 @@ from p2pearl.gui import (  # noqa: E402
     load_settings,
     managed_pearld_too_old,
     miner_command,
+    normalize_settings,
+    payout_stats_rows,
+    payout_stats_summary,
     save_settings,
     self_command,
 )
@@ -46,6 +49,21 @@ def test_build_daemon_args_basic():
     assert "--peer" not in args and "--share-target" not in args
 
 
+def test_managed_mode_forces_local_rpc_url():
+    s = dict(DEFAULTS, manage_pearld="1", rpc_url="http://107.214.187.2:3360")
+    assert normalize_settings(s)["rpc_url"] == "http://127.0.0.1:44107"
+    args = build_daemon_args(s)
+    assert args[args.index("--rpc-url") + 1] == "http://127.0.0.1:44107"
+
+    s["network"] = "testnet"
+    assert normalize_settings(s)["rpc_url"] == "http://127.0.0.1:44109"
+
+
+def test_unmanaged_mode_preserves_custom_rpc_url():
+    s = dict(DEFAULTS, manage_pearld="0", rpc_url="http://192.168.68.10:44107")
+    assert normalize_settings(s)["rpc_url"] == "http://192.168.68.10:44107"
+
+
 def test_build_daemon_args_peers_and_extras():
     s = dict(DEFAULTS, peers="  1.2.3.4:37900\n\n5.6.7.8:37900 ",
              share_target="0xff", pause_cmd="pkill -STOP -x xmrig")
@@ -62,6 +80,36 @@ def test_miner_command_uses_port_and_wallet():
     cmd = miner_command(s)
     assert ":4444" in cmd and "--wallet prl1pabc" in cmd and "pearlhash" in cmd
     assert "<your-prl1p" in miner_command(dict(DEFAULTS))   # placeholder when unset
+
+
+def test_payout_stats_formatting():
+    snapshot = {
+        "window_shares": 2,
+        "window_max": 1000,
+        "block_reward_grains": 123_456_789,
+        "min_payout_grains": 100_000,
+        "addresses": [
+            {
+                "address": "prl1pabc",
+                "weight": 7,
+                "percent_bps": 8750,
+                "potential_grains": 108_024_690,
+                "estimated_grains": 108_024_690,
+            },
+            {
+                "address": "prl1pdust",
+                "weight": 1,
+                "percent_bps": 1250,
+                "potential_grains": 50_000,
+                "estimated_grains": 0,
+            },
+        ],
+    }
+    assert "2 / 1000" in payout_stats_summary(snapshot)
+    rows = payout_stats_rows(snapshot)
+    assert rows[0] == ("prl1pabc", "87.50%", "1.0802469 PRL", "7")
+    assert rows[1][2] == "<0.001 PRL"
+    assert payout_stats_summary(None) == "No accepted shares yet."
 
 
 def test_self_command_unfrozen():

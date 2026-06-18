@@ -17,7 +17,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from p2pearl.consensus.share import ShareBlock  # noqa: E402
 from p2pearl.consensus.sharechain import GENESIS_PREV, Sharechain  # noqa: E402
-from p2pearl.daemon import ParentTemplate, PoolNode, serialize_payouts  # noqa: E402
+from p2pearl.daemon import (  # noqa: E402
+    ParentTemplate,
+    PoolNode,
+    format_payout_estimate,
+    payout_estimate_snapshot,
+    serialize_payouts,
+)
 from p2pearl.stratum.server import StratumJob, StratumServer, Submission  # noqa: E402
 
 ADDR_A = "prl1p" + "q" * 58
@@ -133,6 +139,26 @@ def test_serialize_payouts_deterministic():
     a = serialize_payouts([Payout("addrA", 10), Payout("addrB", 20)])
     b = serialize_payouts([Payout("addrA", 10), Payout("addrB", 20)])
     assert a == b and len(a) > 0
+
+
+def test_payout_estimate_snapshot_after_shares():
+    sc = Sharechain(window=10, bootstrap_target=SHARE_TARGET)
+    node = _node(sc)
+    node.set_template(TEMPLATE)
+
+    for addr in (ADDR_A, ADDR_B):
+        header_hex, target, height, ctx = node.build_job_for(addr)
+        asyncio.run(node.handle_submit(
+            Submission(addr, "rig", StratumJob(addr[-4:], header_hex, target, height, ctx), PROOF_B64)))
+
+    snapshot = payout_estimate_snapshot(sc, block_reward_grains=1_000_000_000, min_payout_grains=0)
+    assert snapshot["window_shares"] == 2
+    assert snapshot["window_max"] == 10
+    assert snapshot["total_weight"] > 0
+    rows = {row["address"]: row for row in snapshot["addresses"]}
+    assert rows[ADDR_A]["percent_bps"] == rows[ADDR_B]["percent_bps"] == 5000
+    assert rows[ADDR_A]["estimated_grains"] == rows[ADDR_B]["estimated_grains"] == 500_000_000
+    assert "50.00%" in format_payout_estimate(snapshot)
 
 
 # --------------------------------------------------------------------------- #
