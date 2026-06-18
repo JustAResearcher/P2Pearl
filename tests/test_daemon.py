@@ -158,6 +158,26 @@ async def _share_flow():
     assert not bblock.calls and not sblock.calls  # not a block
 
 
+def test_handle_submit_duplicate_same_job_is_idempotent():
+    asyncio.run(_duplicate_same_job_flow())
+
+
+async def _duplicate_same_job_flow():
+    sc = Sharechain(window=10)
+    bshare = _Rec()
+    node = _node(sc, verify_block=False, broadcast_share=bshare)
+    node.set_template(TEMPLATE)
+    header_hex, target, height, ctx = node.build_job_for(ADDR_A)
+    job = StratumJob("00001000-0001", header_hex, target, height, ctx)
+
+    first = await node.handle_submit(Submission(ADDR_A, "rigA", job, PROOF_B64))
+    second = await node.handle_submit(Submission(ADDR_A, "rigA", job, PROOF_B64))
+
+    assert first.accepted and second.accepted
+    assert len(sc) == 1
+    assert len(bshare.calls) == 1
+
+
 def test_handle_submit_passes_cert_version_to_verifiers():
     asyncio.run(_cert_version_flow())
 

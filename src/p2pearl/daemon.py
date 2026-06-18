@@ -216,6 +216,8 @@ class PoolNode:
         proof_bytes = submission.plain_proof_b64.encode("ascii")
         added = self.sharechain.add_share(ctx.candidate, verified=True, proof=proof_bytes)
         if not added.accepted:
+            if added.reason == "duplicate" and ctx.candidate.share_id() in self.sharechain:
+                return SubmitResult(True)
             return SubmitResult(False, P.STALE_SHARE_CODE, added.reason or "share rejected")
 
         # 3. Gossip the share to peers.

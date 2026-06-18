@@ -4,7 +4,7 @@
 
 P2Pearl is a mining pool with **no company behind it**: no operator, no account, no signup, and a **0 % fee**. When the pool finds a block, the block itself pays every recent miner their share, straight to their own wallet. There is nobody to take a cut, run off with funds, or get shut down — the same idea as Monero's P2Pool, built for Pearl.
 
-[![release](https://img.shields.io/github/v/release/JustAResearcher/P2Pearl)](https://github.com/JustAResearcher/P2Pearl/releases/latest) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE) ![tests](https://img.shields.io/badge/tests-122%20passing-brightgreen)
+[![release](https://img.shields.io/github/v/release/JustAResearcher/P2Pearl)](https://github.com/JustAResearcher/P2Pearl/releases/latest) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE) ![tests](https://img.shields.io/badge/tests-123%20passing-brightgreen)
 
 <p align="center"><img src="docs/img/gui.png" alt="The P2Pearl control panel" width="640"></p>
 
@@ -192,6 +192,7 @@ The only latency between *finding* a block and *announcing* it is generating its
 |---|---|
 | `could not reach pearld at …` on startup | Wrong `--rpc-url`/credentials, or `pearld` still syncing. The GUI's **Test pearld** button checks exactly this. |
 | GUI says managed `pearld` is too old | Pearl's June 2026 MoE hard fork requires v2 certificates. Use an updated P2Pearl bundle or untick **Run pearld for me** and point the RPC URL at `pearld` 1.1.0 or newer. |
+| SRBMiner shows alternating accepted / `duplicate` shares | Update to v0.0.21 or newer. Fast GPUs can submit an extra proof against the previous clean job; P2Pearl treats that harmless duplicate as an idempotent success. |
 | Miner connects but never gets a job | The daemon primes its first job from `getblocktemplate` — if `pearld` is mid-sync, GBT errors until it reaches the tip. Wait for sync. |
 | Shares rejected: `share does not meet target` | Normal occasionally (the miner raced a retarget/job refresh). Constant rejections → miner is on the wrong algorithm or a stale connection; restart the miner. |
 | Gossiped shares rejected: `bad share target` / `bad coinbase value` | The peer is on different consensus (old version, or a different `--share-target` bootstrap). All nodes must run the same `SIDECHAIN_VERSION` and genesis target. |
@@ -249,7 +250,7 @@ src/p2pearl/
   p2p/node.py            gossip: announce/on-demand proof fetch, relay, window sync
   gui.py                 the tkinter control panel (settings + start/stop + live log)
   daemon.py              PoolNode orchestrator: per-miner jobs, verify, block path
-tests/                   unit tests (122 passing)
+tests/                   unit tests (123 passing)
 docs/                    blueprint + running-a-node guide
 tools/apply_m2_binding.py  one-step additive patch for a stock Pearl checkout
 integration/             cross-repo notes (py-pearl-mining binding, stratum dialect)
@@ -261,7 +262,7 @@ Runs today — no node, no GPU, no native build:
 
 ```bash
 pip install -e ".[dev]"
-PYTHONPATH=src python -m pytest -q       # 122 passing (pure stdlib + a faked pearl_mining)
+PYTHONPATH=src python -m pytest -q       # 123 passing (pure stdlib + a faked pearl_mining)
 python -m p2pearl demo                   # watch the full pipeline: 2 nodes, stratum, P2P gossip, PPLNS
 ```
 
