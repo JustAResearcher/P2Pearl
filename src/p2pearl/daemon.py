@@ -29,7 +29,7 @@ import struct
 import sys
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from . import __version__, config
@@ -414,6 +414,12 @@ class PoolNode:
         tip = self.sharechain.tip()
         prev_share_id = tip.share_id() if tip is not None else GENESIS_PREV
         s_height = (tip.sidechain_height + 1) if tip is not None else 0
+        share_timestamp = max(
+            int(time.time()),
+            template.curtime,
+            (tip.timestamp + 1) if tip is not None else template.curtime,
+        )
+        job_template = replace(template, curtime=share_timestamp)
         # Consensus values — what _validate will demand of the submitted share:
         # the chain-derived share target, and the EXACT parent subsidy (shares are
         # coinbase-only, so GBT's coinbasevalue — subsidy + mempool fees — would
@@ -434,7 +440,7 @@ class PoolNode:
             prev_share_id=prev_share_id,
             parent_prev_block=template.prev_block,
             parent_height=template.height,
-            timestamp=template.curtime,
+            timestamp=share_timestamp,
             share_target=share_target,
             block_nbits=template.bits,
             coinbase_version=template.version,
@@ -442,7 +448,7 @@ class PoolNode:
             miner_address=worker_address,
             payout_set_hash=payout_set_hash,
         )
-        header_hex, header_ctx = self._make_header(template, payouts, candidate.share_id())
+        header_hex, header_ctx = self._make_header(job_template, payouts, candidate.share_id())
         ctx = _JobContext(
             candidate=candidate, header_ctx=header_ctx, payouts=payouts,
             cert_version=template.required_cert_version,

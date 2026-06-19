@@ -152,6 +152,48 @@ def test_build_job_for_creates_candidate():
     assert node.build_job_for(None) is None          # no worker address
 
 
+def test_jobs_use_live_monotonic_timestamps_for_retarget(monkeypatch):
+    asyncio.run(_jobs_use_live_monotonic_timestamps_for_retarget(monkeypatch))
+
+
+async def _jobs_use_live_monotonic_timestamps_for_retarget(monkeypatch):
+    template = ParentTemplate(
+        height=1000, prev_block=b"\x22" * 32, bits=0x1E01FFFF,
+        curtime=1_700_000_000, coinbase_value=5_000_000_000,
+    )
+    stable_target = daemon_mod.config.BOOTSTRAP_SHARE_TARGET
+    sc = Sharechain(window=10, bootstrap_target=stable_target)
+    node = _node(sc, verify_block=False)
+    node.set_template(template)
+    clock = {"now": template.curtime}
+    monkeypatch.setattr(daemon_mod.time, "time", lambda: clock["now"])
+
+    async def mine_one(job_id):
+        spec = node.build_job_for(ADDR_A)
+        assert spec is not None
+        header_hex, target, height, ctx = spec
+        header_ts = struct.unpack_from("<I", bytes.fromhex(header_hex), 68)[0]
+        assert header_ts == ctx.candidate.timestamp
+        result = await node.handle_submit(
+            Submission(ADDR_A, "rig", StratumJob(job_id, header_hex, target, height, ctx), PROOF_B64))
+        assert result.accepted
+        await _drain_background(node)
+        return target, ctx.candidate.timestamp
+
+    first_target, first_ts = await mine_one("retarget-1")
+    clock["now"] += 10
+    second_target, second_ts = await mine_one("retarget-2")
+    clock["now"] += 10
+    third = node.build_job_for(ADDR_A)
+    assert third is not None
+    third_header, third_target, _, third_ctx = third
+
+    assert first_target == second_target == third_target == stable_target
+    assert (first_ts, second_ts, third_ctx.candidate.timestamp) == (
+        template.curtime, template.curtime + 10, template.curtime + 20)
+    assert struct.unpack_from("<I", bytes.fromhex(third_header), 68)[0] == third_ctx.candidate.timestamp
+
+
 def test_build_job_none_without_template():
     node = _node(Sharechain(window=10))
     assert node.build_job_for(ADDR_A) is None
