@@ -353,6 +353,10 @@ def test_handle_submit_ack_not_blocked_by_share_verification():
     asyncio.run(_submit_ack_not_blocked_by_share_verification())
 
 
+def test_best_tip_refresh_not_blocked_by_block_check():
+    asyncio.run(_best_tip_refresh_not_blocked_by_block_check())
+
+
 def test_stratum_refresh_requests_are_coalesced():
     asyncio.run(_stratum_refresh_requests_are_coalesced())
 
@@ -418,6 +422,25 @@ async def _submit_ack_not_blocked_by_share_verification():
     verify.release.set()
     await _drain_background(node)
     assert len(sc) == 1
+
+
+async def _best_tip_refresh_not_blocked_by_block_check():
+    sc = Sharechain(window=10)
+    stratum = _SlowStratum()
+    block_check = _SlowVerifyShare(result=False)
+    node = _node(sc, verify_block=block_check, stratum=stratum)
+    node.set_template(TEMPLATE)
+    header_hex, target, height, ctx = node.build_job_for(ADDR_A)
+    job = StratumJob("00001000-refresh", header_hex, target, height, ctx)
+
+    res = await node.handle_submit(Submission(ADDR_A, "rigA", job, PROOF_B64))
+
+    assert res.accepted
+    await asyncio.wait_for(stratum.called.wait(), timeout=0.2)
+    assert await asyncio.to_thread(block_check.called.wait, 0.2)
+    stratum.release.set()
+    block_check.release.set()
+    await _drain_background(node)
 
 
 async def _stratum_refresh_requests_are_coalesced():

@@ -316,13 +316,10 @@ class PoolNode:
         """Run accepted-share work that should not hold the miner ACK open."""
         self.emit_payout_stats()
 
-        try:
-            is_block = await asyncio.to_thread(
-                self._verify_block, header_bytes, submission.plain_proof_b64, ctx.cert_version)
-            if is_block:
-                await self._assemble_and_submit(ctx, submission.plain_proof_b64)
-        finally:
-            self._request_stratum_refresh()
+        is_block = await asyncio.to_thread(
+            self._verify_block, header_bytes, submission.plain_proof_b64, ctx.cert_version)
+        if is_block:
+            await self._assemble_and_submit(ctx, submission.plain_proof_b64)
 
     async def _run_submit_validation(
         self,
@@ -372,6 +369,9 @@ class PoolNode:
                     return
                 finish(False, added.reason or "share rejected")
                 return
+
+            if added.is_best_tip:
+                self._request_stratum_refresh()
 
             if self._broadcast_share is not None:
                 self._spawn_background(
