@@ -15,8 +15,8 @@ Flow:
   build_job_for(addr): sidechain tip -> PPLNS payouts -> coinbase(payouts +
     OP_RETURN<candidate share id>) -> incomplete header -> (header, share_target).
   handle_submit(sub): verify_share at the SHARE target -> sharechain.add_share ->
-    gossip; if it ALSO clears the BLOCK target (the UNMODIFIED verifier) -> assemble
-    + submitblock + gossip the block -> refresh every miner's job.
+    ACK the miner; post-ACK follow-up gossips the share, checks whether it also
+    clears the BLOCK target, submits/gossips any block, and refreshes miner jobs.
 """
 
 from __future__ import annotations
@@ -281,6 +281,23 @@ class PoolNode:
                 return
             self._refresh_task = self._spawn_background("stratum refresh", self._run_stratum_refresh())
 
+    async def _run_submit_followup(
+        self,
+        submission: Submission,
+        ctx: _JobContext,
+        header_bytes: bytes,
+    ) -> None:
+        """Run accepted-share work that should not hold the miner ACK open."""
+        self.emit_payout_stats()
+
+        try:
+            is_block = await asyncio.to_thread(
+                self._verify_block, header_bytes, submission.plain_proof_b64, ctx.cert_version)
+            if is_block:
+                await self._assemble_and_submit(ctx, submission.plain_proof_b64)
+        finally:
+            self._request_stratum_refresh()
+
     def set_template(self, template: ParentTemplate) -> None:
         prev = self._template.prev_block if self._template is not None else None
         if template.prev_block != prev:
@@ -386,25 +403,18 @@ class PoolNode:
                 return finish(True, message="duplicate")
             return finish(False, P.STALE_SHARE_CODE, added.reason or "share rejected")
 
-        # 3. Gossip the share to peers.
+        # 3. Non-ACK-critical follow-up: gossip, payout stats, block-target check,
+        #    possible block submission, and fresh jobs for miners.
         if self._broadcast_share is not None:
-            await self._broadcast_share(ctx.candidate, submission.plain_proof_b64)
-        mark("broadcast_share")
-
-        self.emit_payout_stats()
-        mark("payout_stats")
-
-        # 4. Block-found path: confirm at the BLOCK target with the UNMODIFIED verifier,
-        #    then assemble (ZK-prove) the full Pearl block, submit it, and gossip it.
-        is_block = self._verify_block(header_bytes, submission.plain_proof_b64, ctx.cert_version)
-        mark("verify_block")
-        if is_block:
-            await self._assemble_and_submit(ctx, submission.plain_proof_b64)
-            mark("assemble_submit_block")
-
-        # 5. New sidechain tip -> rebuild every miner's job (new prev_share + PPLNS).
-        self._request_stratum_refresh()
-        mark("schedule_refresh")
+            self._spawn_background(
+                "share gossip",
+                self._broadcast_share(ctx.candidate, submission.plain_proof_b64),
+            )
+        self._spawn_background(
+            "submit follow-up",
+            self._run_submit_followup(submission, ctx, header_bytes),
+        )
+        mark("schedule_followup")
         return finish(True)
 
     async def _assemble_and_submit(self, ctx: _JobContext, plain_proof_b64: str) -> None:

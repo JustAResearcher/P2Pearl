@@ -70,6 +70,18 @@ class _SlowStratum:
         await self.release.wait()
 
 
+class _SlowBroadcast:
+    def __init__(self):
+        self.called = asyncio.Event()
+        self.release = asyncio.Event()
+        self.calls = []
+
+    async def __call__(self, *args):
+        self.calls.append(args)
+        self.called.set()
+        await self.release.wait()
+
+
 class _RefreshRecorder:
     def __init__(self):
         self.called = asyncio.Event()
@@ -85,6 +97,11 @@ class _RefreshRecorder:
 
 async def _noop(*args):
     return None
+
+
+async def _drain_background(node):
+    while node._background_tasks:
+        await asyncio.gather(*list(node._background_tasks))
 
 
 def _node(sc, *, verify_share=True, verify_block=False, assemble="BLOCKHEX",
@@ -253,6 +270,10 @@ def test_handle_submit_ack_not_blocked_by_stratum_refresh():
     asyncio.run(_submit_ack_not_blocked_by_refresh())
 
 
+def test_handle_submit_ack_not_blocked_by_share_gossip():
+    asyncio.run(_submit_ack_not_blocked_by_share_gossip())
+
+
 def test_stratum_refresh_requests_are_coalesced():
     asyncio.run(_stratum_refresh_requests_are_coalesced())
 
@@ -273,8 +294,26 @@ async def _submit_ack_not_blocked_by_refresh():
     assert res.accepted
     await asyncio.wait_for(stratum.called.wait(), timeout=0.2)
     stratum.release.set()
-    if node._background_tasks:
-        await asyncio.gather(*list(node._background_tasks))
+    await _drain_background(node)
+
+
+async def _submit_ack_not_blocked_by_share_gossip():
+    sc = Sharechain(window=10)
+    broadcast = _SlowBroadcast()
+    node = _node(sc, verify_block=False, broadcast_share=broadcast)
+    node.set_template(TEMPLATE)
+    header_hex, target, height, ctx = node.build_job_for(ADDR_A)
+    job = StratumJob("00001000-gossip", header_hex, target, height, ctx)
+
+    res = await asyncio.wait_for(
+        node.handle_submit(Submission(ADDR_A, "rigA", job, PROOF_B64)),
+        timeout=0.2,
+    )
+
+    assert res.accepted
+    await asyncio.wait_for(broadcast.called.wait(), timeout=0.2)
+    broadcast.release.set()
+    await _drain_background(node)
 
 
 async def _stratum_refresh_requests_are_coalesced():
@@ -297,8 +336,7 @@ async def _stratum_refresh_requests_are_coalesced():
     assert stratum.count == 1
 
     stratum.release.set()
-    if node._background_tasks:
-        await asyncio.wait_for(asyncio.gather(*list(node._background_tasks)), timeout=0.2)
+    await asyncio.wait_for(_drain_background(node), timeout=0.2)
     assert stratum.count == 2
 
 
@@ -313,6 +351,7 @@ async def _share_flow():
     res = await node.handle_submit(Submission(ADDR_A, "rigA", job, PROOF_B64))
     assert res.accepted
     assert len(sc) == 1 and sc.tip().miner_address == ADDR_A
+    await _drain_background(node)
     assert len(bshare.calls) == 1                 # share gossiped
     assert not bblock.calls and not sblock.calls  # not a block
 
@@ -334,6 +373,7 @@ async def _duplicate_same_job_flow():
 
     assert first.accepted and second.accepted
     assert len(sc) == 1
+    await _drain_background(node)
     assert len(bshare.calls) == 1
 
 
@@ -367,6 +407,7 @@ async def _cert_version_flow():
     job = StratumJob("00001000-0004", header_hex, target, height, ctx)
     assert (await node.handle_submit(Submission(ADDR_A, "rigA", job, PROOF_B64))).accepted
     assert seen["share_args"][-1] == 2
+    await _drain_background(node)
     assert seen["block_args"][-1] == 2
 
 
@@ -384,6 +425,7 @@ async def _block_flow():
     job = StratumJob("00001000-0002", header_hex, target, height, ctx)
     res = await node.handle_submit(Submission(ADDR_A, "rigA", job, PROOF_B64))
     assert res.accepted
+    await _drain_background(node)
     assert sblock.calls and sblock.calls[0][0] == "DEADBEEF"   # submitblock got the assembled hex
     assert len(bblock.calls) == 1
 
@@ -417,6 +459,7 @@ async def _flood_flow():
         res = await node.handle_submit(Submission(addr, "rig", StratumJob(jid, header_hex, target, height, ctx), PROOF_B64))
         assert res.accepted
 
+    await _drain_background(node)
     assert len(assembled) == 1                               # proved exactly once
     assert len(sblock.calls) == 1 and sblock.calls[0][0] == "DEADBEEF"
     assert len(bblock.calls) == 1                            # block gossiped once
@@ -428,6 +471,7 @@ async def _flood_flow():
         curtime=TEMPLATE.curtime, coinbase_value=TEMPLATE.coinbase_value))
     header_hex, target, height, ctx = node.build_job_for(ADDR_A)
     assert (await node.handle_submit(Submission(ADDR_A, "rig", StratumJob("j3", header_hex, target, height, ctx), PROOF_B64))).accepted
+    await _drain_background(node)
     assert len(assembled) == 2
 
 
@@ -514,6 +558,7 @@ async def _collab_dedup():
     node.set_template(TEMPLATE)
     header_hex, target, height, ctx = node.build_job_for(ADDR_A)
     await node.handle_submit(Submission(ADDR_A, "rigA", StratumJob("j", header_hex, target, height, ctx), PROOF_B64))
+    await _drain_background(node)
     assert len(assembled) == 1
     await node.try_collaborative_submit(_gossip_share(), PROOF_B64)
     assert len(assembled) == 1                       # deduped: no second prove
