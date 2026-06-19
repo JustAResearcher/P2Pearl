@@ -110,7 +110,7 @@ class Sharechain:
         """True if ``share`` would be accepted right now (no insertion)."""
         return self._validate(share, now)[0]
 
-    def expected_target(self, prev_share_id: bytes) -> int | None:
+    def expected_target(self, prev_share_id: bytes, timestamp: int | None = None) -> int | None:
         """The share_target consensus REQUIRES of a share extending ``prev_share_id``.
 
         Deterministic from the chain alone, so the finder (``build_job_for``) and
@@ -138,6 +138,11 @@ class Sharechain:
                 return None  # truncated history: cannot derive the consensus target
             shares.append(e.share)
             cur = e.share.prev_share_id
+        if timestamp is not None:
+            work = sum(s.difficulty() for s in shares)
+            span = int(timestamp) - shares[-1].timestamp
+            return retarget_target(
+                entry.share.share_target, work, span, self.share_time, config.RETARGET_CLAMP)
         if len(shares) < 2:
             return entry.share.share_target  # no interval to measure yet — carry
         work = sum(s.difficulty() for s in shares[:-1])  # work mined during the span
@@ -257,7 +262,7 @@ class Sharechain:
             return False, "timestamp regression"
         if share.parent_height < parent.parent_height:
             return False, "parent height regression"
-        expected = self.expected_target(share.prev_share_id)
+        expected = self.expected_target(share.prev_share_id, share.timestamp)
         if expected is not None and share.share_target != expected:
             return False, "bad share target"
 

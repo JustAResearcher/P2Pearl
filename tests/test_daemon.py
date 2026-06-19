@@ -108,6 +108,21 @@ class _RefreshRecorder:
         self.called.set()
 
 
+class _StaticGBT:
+    def __init__(self):
+        self.calls = 0
+
+    def get_block_template(self):
+        self.calls += 1
+        return {
+            "height": 1000,
+            "previousblockhash": "22" * 32,
+            "bits": "1e01ffff",
+            "curtime": 1_700_000_000,
+            "coinbasevalue": 5_000_000_000,
+        }
+
+
 async def _noop(*args):
     return None
 
@@ -295,15 +310,18 @@ def test_serialize_payouts_deterministic():
     assert a == b and len(a) > 0
 
 
-def test_payout_estimate_snapshot_after_shares():
+def test_payout_estimate_snapshot_after_shares(monkeypatch):
     sc = Sharechain(window=10, bootstrap_target=SHARE_TARGET)
     node = _node(sc)
     node.set_template(TEMPLATE)
+    clock = {"now": TEMPLATE.curtime}
+    monkeypatch.setattr(daemon_mod.time, "time", lambda: clock["now"])
 
     for addr in (ADDR_A, ADDR_B):
         header_hex, target, height, ctx = node.build_job_for(addr)
         asyncio.run(node.handle_submit(
             Submission(addr, "rig", StratumJob(addr[-4:], header_hex, target, height, ctx), PROOF_B64)))
+        clock["now"] += 10
 
     snapshot = payout_estimate_snapshot(sc, block_reward_grains=1_000_000_000, min_payout_grains=0)
     assert snapshot["window_shares"] == 2
@@ -337,6 +355,10 @@ def test_handle_submit_ack_not_blocked_by_share_verification():
 
 def test_stratum_refresh_requests_are_coalesced():
     asyncio.run(_stratum_refresh_requests_are_coalesced())
+
+
+def test_run_refreshes_same_parent_for_time_based_target(monkeypatch):
+    asyncio.run(_run_refreshes_same_parent_for_time_based_target(monkeypatch))
 
 
 async def _submit_ack_not_blocked_by_refresh():
@@ -420,6 +442,22 @@ async def _stratum_refresh_requests_are_coalesced():
     stratum.release.set()
     await asyncio.wait_for(_drain_background(node), timeout=0.2)
     assert stratum.count == 2
+
+
+async def _run_refreshes_same_parent_for_time_based_target(monkeypatch):
+    stratum = _RefreshRecorder()
+    node = _node(Sharechain(window=10), stratum=stratum)
+    monkeypatch.setattr(daemon_mod.config, "SHARE_TARGET_TIME_SECONDS", 0.01)
+    task = asyncio.create_task(node.run(_StaticGBT(), poll_interval=0.005))
+    try:
+        deadline = asyncio.get_running_loop().time() + 0.2
+        while stratum.count < 2 and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.005)
+        assert stratum.count >= 2
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
 
 async def _share_flow():

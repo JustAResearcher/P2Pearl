@@ -261,6 +261,7 @@ class PoolNode:
         self._pending_shares: set[bytes] = set()
         self._refresh_task: asyncio.Task | None = None
         self._refresh_again = False
+        self._last_job_refresh_at = 0.0
         # Block-assembly is the ZK prover — seconds of CPU on the critical find->submit
         # path. Serialize it (one prove at a time; concurrent proves only fight for the
         # same cores) and DEDUP per parent tip so a flood of block-clearing shares can't
@@ -300,6 +301,7 @@ class PoolNode:
 
     def _request_stratum_refresh(self) -> None:
         if self.stratum is not None:
+            self._last_job_refresh_at = time.monotonic()
             if self._refresh_task is not None and not self._refresh_task.done():
                 self._refresh_again = True
                 return
@@ -424,7 +426,7 @@ class PoolNode:
         # the chain-derived share target, and the EXACT parent subsidy (shares are
         # coinbase-only, so GBT's coinbasevalue — subsidy + mempool fees — would
         # overpay and make the assembled block invalid for the parent chain).
-        share_target = self.sharechain.expected_target(prev_share_id)
+        share_target = self.sharechain.expected_target(prev_share_id, share_timestamp)
         if share_target is None:
             share_target = tip.share_target   # truncated local history right after a
                                               # window sync — carry the tip's target
@@ -580,6 +582,9 @@ class PoolNode:
                 rpc_failures = 0
             if template.prev_block != last_prev:
                 last_prev = template.prev_block
+                self.set_template(template)
+                self._request_stratum_refresh()
+            elif time.monotonic() - self._last_job_refresh_at >= config.SHARE_TARGET_TIME_SECONDS:
                 self.set_template(template)
                 self._request_stratum_refresh()
             await asyncio.sleep(poll_interval)

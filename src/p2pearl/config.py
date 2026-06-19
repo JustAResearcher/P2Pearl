@@ -21,7 +21,7 @@ PARENT_RPC_DEFAULT_URL = "http://127.0.0.1:44107"
 PAYOUT_STATS_PREFIX = "P2PEARL_PAYOUT_STATS "
 
 # --- P2Pearl sidechain consensus (the "sharechain") ---
-SIDECHAIN_VERSION = 3          # v3: consensus share-target retarget + subsidy-exact coinbase_value
+SIDECHAIN_VERSION = 4          # v4: timestamp-aware retarget + subsidy-exact coinbase_value
 SHARE_TARGET_TIME_SECONDS = 10           # one share every ~10s on average (per-pool difficulty)
 PPLNS_WINDOW_SHARES = 1000               # reward look-back; tune to ~a few parent blocks of work
 UNCLE_BLOCK_DEPTH = 3                    # an uncle may be referenced up to N sidechain heights back

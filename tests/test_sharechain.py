@@ -293,13 +293,31 @@ def test_retarget_hardens_on_fast_shares():
     sc = Sharechain(window=8)
     g = mk(GENESIS_PREV, 0, ts=1000)
     add(sc, g)
-    s1 = mk(g.share_id(), 1, ts=1001)
-    assert add(sc, s1).accepted                            # carry: still T
+    first_target = sc.expected_target(g.share_id(), timestamp=1001)
+    assert first_target == T // 4
+    s1 = mk(g.share_id(), 1, ts=1001, target=first_target)
+    assert add(sc, s1).accepted
     expected = sc.expected_target(s1.share_id())
-    assert expected == T // 4                              # clamped hardening step
+    assert expected == first_target // 4                   # clamped hardening step
     r = add(sc, mk(s1.share_id(), 2, ts=1002))             # stamps T -> stale target
     assert not r.accepted and r.reason == "bad share target"
-    assert add(sc, mk(s1.share_id(), 2, ts=1002, target=expected)).accepted
+    child_target = sc.expected_target(s1.share_id(), timestamp=1002)
+    assert child_target == first_target // 4
+    assert add(sc, mk(s1.share_id(), 2, ts=1002, target=child_target)).accepted
+
+
+def test_retarget_eases_with_candidate_timestamp_before_next_share():
+    sc = Sharechain(window=8)
+    g = mk(GENESIS_PREV, 0, ts=1000)
+    add(sc, g)
+    first_target = sc.expected_target(g.share_id(), timestamp=1001)
+    s1 = mk(g.share_id(), 1, ts=1001, target=first_target)
+    assert add(sc, s1).accepted
+    hard = sc.expected_target(s1.share_id())
+    eased = sc.expected_target(s1.share_id(), timestamp=1041)
+
+    assert eased > hard
+    assert add(sc, mk(s1.share_id(), 2, ts=1041, target=eased)).accepted
 
 
 def test_retarget_eases_on_slow_shares():
@@ -307,9 +325,11 @@ def test_retarget_eases_on_slow_shares():
     sc = Sharechain(window=8)
     g = mk(GENESIS_PREV, 0, ts=1000)
     add(sc, g)
-    s1 = mk(g.share_id(), 1, ts=2000)
+    first_target = sc.expected_target(g.share_id(), timestamp=2000)
+    assert first_target == T * 4
+    s1 = mk(g.share_id(), 1, ts=2000, target=first_target)
     assert add(sc, s1).accepted
-    assert sc.expected_target(s1.share_id()) == T * 4
+    assert sc.expected_target(s1.share_id()) == first_target * 4
 
 
 def test_expected_target_unknown_parent_is_none():

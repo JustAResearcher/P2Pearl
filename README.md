@@ -4,7 +4,7 @@
 
 P2Pearl is a mining pool with **no company behind it**: no operator, no account, no signup, and a **0 % fee**. When the pool finds a block, the block itself pays every recent miner their share, straight to their own wallet. There is nobody to take a cut, run off with funds, or get shut down — the same idea as Monero's P2Pool, built for Pearl.
 
-[![release](https://img.shields.io/github/v/release/JustAResearcher/P2Pearl)](https://github.com/JustAResearcher/P2Pearl/releases/latest) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE) ![tests](https://img.shields.io/badge/tests-135%20passing-brightgreen)
+[![release](https://img.shields.io/github/v/release/JustAResearcher/P2Pearl)](https://github.com/JustAResearcher/P2Pearl/releases/latest) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE) ![tests](https://img.shields.io/badge/tests-137%20passing-brightgreen)
 
 <p align="center"><img src="docs/img/gui.png" alt="The P2Pearl control panel" width="640"></p>
 
@@ -136,7 +136,7 @@ These define the sidechain itself. **Every node on a sidechain must agree on all
 
 | Constant | Value | Meaning |
 |---|---|---|
-| `SIDECHAIN_VERSION` | `3` | Share format/rules version. v3 = consensus retarget + subsidy-exact coinbase. v2 shares are rejected (and vice versa), so all peered nodes must run the same major version. |
+| `SIDECHAIN_VERSION` | `4` | Share format/rules version. v4 = timestamp-aware retarget + subsidy-exact coinbase. Older shares are rejected (and vice versa), so all peered nodes must run the same major version. |
 | `SHARE_TARGET_TIME_SECONDS` | `10` | The retarget aims for one share per 10 s **pool-wide**. |
 | `RETARGET_WINDOW_SHARES` | `60` | Work-rate look-back for the retarget (~10 min of shares). |
 | `RETARGET_CLAMP` | `4` | A share's target may move at most 4× per share, either direction (damps oscillation and timestamp games). |
