@@ -56,10 +56,13 @@ def _emit_submit_timing(
     reason: str | None,
     started_at: float,
     phases: list[tuple[str, float]],
+    frame_bytes: int,
+    read_ms: float,
 ) -> None:
     total_ms = (time.perf_counter() - started_at) * 1000.0
+    wire_ms = total_ms + read_ms
     threshold_ms = _submit_timing_threshold_ms()
-    if not _trace_all_submits() and total_ms < threshold_ms:
+    if not _trace_all_submits() and wire_ms < threshold_ms:
         return
     payload = {
         "conn_id": conn.conn_id,
@@ -70,6 +73,9 @@ def _emit_submit_timing(
         "accepted": accepted,
         "reason": reason,
         "total_ms": round(total_ms, 3),
+        "read_ms": round(read_ms, 3),
+        "wire_ms": round(wire_ms, 3),
+        "frame_bytes": frame_bytes,
         "phases_ms": {label: round(ms, 3) for label, ms in phases},
     }
     print("P2PEARL_STRATUM_TIMING " + json.dumps(payload, separators=(",", ":")), flush=True)
@@ -194,6 +200,8 @@ class _Connection:
         self.worker_address: str | None = None
         self.worker_label = "default"
         self._send_lock = asyncio.Lock()
+        self._frame_bytes = 0
+        self._frame_read_ms = 0.0
 
     @property
     def ready(self) -> bool:
@@ -220,16 +228,29 @@ class _Connection:
         except Exception:
             pass
 
+    async def _read_frame(self) -> tuple[bytes, int, float]:
+        first = await self.reader.read(1)
+        if not first:
+            return b"", 0, 0.0
+        started_at = time.perf_counter()
+        if first == b"\n":
+            return first, 1, 0.0
+        rest = await self.reader.readuntil(b"\n")
+        line = first + rest
+        return line, len(line), (time.perf_counter() - started_at) * 1000.0
+
     async def run(self) -> None:
         while True:
             try:
-                line = await self.reader.readline()
-            except (ConnectionError, OSError):
+                line, frame_bytes, read_ms = await self._read_frame()
+            except (asyncio.IncompleteReadError, ConnectionError, OSError):
                 break
             if not line:
                 break          # EOF
             if not line.strip():
                 continue
+            self._frame_bytes = frame_bytes
+            self._frame_read_ms = read_ms
             try:
                 await self._dispatch(line)
             except (ConnectionError, OSError):
@@ -296,7 +317,9 @@ class _Connection:
         async def finish(frame: bytes, accepted: bool, reason: str | None) -> None:
             await self.send(frame)
             mark("send_response")
-            _emit_submit_timing(self, req.id, job_id, accepted, reason, started_at, phases)
+            _emit_submit_timing(
+                self, req.id, job_id, accepted, reason, started_at, phases,
+                self._frame_bytes, self._frame_read_ms)
 
         try:
             job_id, proof_b64 = P.parse_submit(req.params)

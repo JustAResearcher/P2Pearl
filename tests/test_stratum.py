@@ -298,6 +298,18 @@ def test_large_plain_proof_frame():
     asyncio.run(_large_flow())
 
 
+def test_submit_timing_reports_frame_read(monkeypatch, capsys):
+    monkeypatch.setenv("P2PEARL_TRACE_SUBMIT", "1")
+    asyncio.run(_timing_flow())
+    out = capsys.readouterr().out
+    line = next(line for line in out.splitlines() if line.startswith("P2PEARL_STRATUM_TIMING "))
+    payload = json.loads(line.split(" ", 1)[1])
+    assert payload["job_id"]
+    assert payload["frame_bytes"] > len(PROOF_B64)
+    assert payload["wire_ms"] >= payload["total_ms"]
+    assert "read_ms" in payload
+
+
 async def _large_flow():
     big = base64.b64encode(b"x" * (400 * 1024)).decode()
     rec = _Recorder(SubmitResult(accepted=True))
@@ -312,6 +324,22 @@ async def _large_flow():
         ack = await _recv(reader)
         assert ack["result"] is True
         assert rec.calls[0].plain_proof_b64 == big
+    finally:
+        await _teardown(server, writer)
+
+
+async def _timing_flow():
+    rec = _Recorder(SubmitResult(accepted=True))
+    server, reader, writer = await _serve(rec)
+    try:
+        await _send(writer, {"id": 1, "method": "mining.authorize", "params": {"wallet": ADDR, "worker": "r"}})
+        await _recv(reader)
+        job = await server.update_job(HEADER_HEX, SHARE_TARGET, 1)
+        await _recv(reader)
+        await _send(writer, {"id": 2, "method": "mining.submit",
+                             "params": {"job_id": job.job_id, "plain_proof": PROOF_B64, "hs": 1}})
+        ack = await _recv(reader)
+        assert ack["result"] is True
     finally:
         await _teardown(server, writer)
 

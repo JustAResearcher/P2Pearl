@@ -4,7 +4,7 @@
 
 P2Pearl is a mining pool with **no company behind it**: no operator, no account, no signup, and a **0 % fee**. When the pool finds a block, the block itself pays every recent miner their share, straight to their own wallet. There is nobody to take a cut, run off with funds, or get shut down — the same idea as Monero's P2Pool, built for Pearl.
 
-[![release](https://img.shields.io/github/v/release/JustAResearcher/P2Pearl)](https://github.com/JustAResearcher/P2Pearl/releases/latest) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE) ![tests](https://img.shields.io/badge/tests-138%20passing-brightgreen)
+[![release](https://img.shields.io/github/v/release/JustAResearcher/P2Pearl)](https://github.com/JustAResearcher/P2Pearl/releases/latest) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE) ![tests](https://img.shields.io/badge/tests-139%20passing-brightgreen)
 
 <p align="center"><img src="docs/img/gui.png" alt="The P2Pearl control panel" width="640"></p>
 
@@ -250,7 +250,7 @@ src/p2pearl/
   p2p/node.py            gossip: announce/on-demand proof fetch, relay, window sync
   gui.py                 the tkinter control panel (settings + start/stop + live log)
   daemon.py              PoolNode orchestrator: per-miner jobs, verify, block path
-tests/                   unit tests (138 passing)
+tests/                   unit tests (139 passing)
 docs/                    blueprint + running-a-node guide
 tools/apply_m2_binding.py  one-step additive patch for a stock Pearl checkout
 integration/             cross-repo notes (py-pearl-mining binding, stratum dialect)
