@@ -14,9 +14,9 @@ merkle root -> its own header). The stratum server's ``set_job_builder`` hook ca
 Flow:
   build_job_for(addr): sidechain tip -> PPLNS payouts -> coinbase(payouts +
     OP_RETURN<candidate share id>) -> incomplete header -> (header, share_target).
-  handle_submit(sub): verify_share at the SHARE target -> sharechain.add_share ->
-    ACK the miner; post-ACK follow-up gossips the share, checks whether it also
-    clears the BLOCK target, submits/gossips any block, and refreshes miner jobs.
+  handle_submit(sub): sanity-check the job -> ACK the miner; post-ACK follow-up
+    verifies the share target, adds it to the sharechain, gossips it, checks whether
+    it also clears the BLOCK target, submits/gossips any block, and refreshes jobs.
 """
 
 from __future__ import annotations
@@ -78,6 +78,29 @@ def _emit_submit_timing(
         "phases_ms": {label: round(ms, 3) for label, ms in phases},
     }
     print("P2PEARL_SUBMIT_TIMING " + json.dumps(payload, separators=(",", ":")), flush=True)
+
+
+def _emit_submit_validation_timing(
+    submission: Submission,
+    accepted: bool,
+    reason: str | None,
+    started_at: float,
+    phases: list[tuple[str, float]],
+) -> None:
+    total_ms = (time.perf_counter() - started_at) * 1000.0
+    threshold_ms = _submit_timing_threshold_ms()
+    if not _trace_all_submits() and total_ms < threshold_ms:
+        return
+    payload = {
+        "job_id": submission.job.job_id,
+        "height": submission.job.height,
+        "worker": submission.worker_label,
+        "accepted": accepted,
+        "reason": reason,
+        "total_ms": round(total_ms, 3),
+        "phases_ms": {label: round(ms, 3) for label, ms in phases},
+    }
+    print("P2PEARL_SUBMIT_VALIDATION " + json.dumps(payload, separators=(",", ":")), flush=True)
 
 
 @dataclass
@@ -235,6 +258,7 @@ class PoolNode:
         self._min_payout = min_payout_grains
         self._template: ParentTemplate | None = None
         self._background_tasks: set[asyncio.Task] = set()
+        self._pending_shares: set[bytes] = set()
         self._refresh_task: asyncio.Task | None = None
         self._refresh_again = False
         # Block-assembly is the ZK prover — seconds of CPU on the critical find->submit
@@ -297,6 +321,69 @@ class PoolNode:
                 await self._assemble_and_submit(ctx, submission.plain_proof_b64)
         finally:
             self._request_stratum_refresh()
+
+    async def _run_submit_validation(
+        self,
+        submission: Submission,
+        ctx: _JobContext,
+        header_bytes: bytes,
+        share_nbits: int,
+    ) -> None:
+        started_at = time.perf_counter()
+        last_mark = started_at
+        phases: list[tuple[str, float]] = []
+        share_id = ctx.candidate.share_id()
+
+        def mark(label: str) -> None:
+            nonlocal last_mark
+            now = time.perf_counter()
+            phases.append((label, (now - last_mark) * 1000.0))
+            last_mark = now
+
+        def finish(accepted: bool, reason: str | None = None) -> None:
+            _emit_submit_validation_timing(submission, accepted, reason, started_at, phases)
+
+        try:
+            try:
+                verified = await asyncio.to_thread(
+                    self._verify_share,
+                    header_bytes,
+                    submission.plain_proof_b64,
+                    share_nbits,
+                    ctx.cert_version,
+                )
+            except Exception as exc:
+                mark("verify_share")
+                finish(False, f"verify failed: {exc}")
+                return
+            mark("verify_share")
+            if not verified:
+                finish(False, "share does not meet target")
+                return
+
+            proof_bytes = submission.plain_proof_b64.encode("ascii")
+            added = self.sharechain.add_share(ctx.candidate, verified=True, proof=proof_bytes)
+            mark("sharechain_add")
+            if not added.accepted:
+                if added.reason == "duplicate" and share_id in self.sharechain:
+                    finish(True, "duplicate")
+                    return
+                finish(False, added.reason or "share rejected")
+                return
+
+            if self._broadcast_share is not None:
+                self._spawn_background(
+                    "share gossip",
+                    self._broadcast_share(ctx.candidate, submission.plain_proof_b64),
+                )
+            self._spawn_background(
+                "submit follow-up",
+                self._run_submit_followup(submission, ctx, header_bytes),
+            )
+            mark("schedule_followup")
+            finish(True)
+        finally:
+            self._pending_shares.discard(share_id)
 
     def set_template(self, template: ParentTemplate) -> None:
         prev = self._template.prev_block if self._template is not None else None
@@ -386,35 +473,19 @@ class PoolNode:
         share_nbits = target_to_bits(submission.job.share_target)
         mark("prepare")
 
-        # 1. Cheap share-target verification (nbits override).
-        if not self._verify_share(
-            header_bytes, submission.plain_proof_b64, share_nbits, ctx.cert_version,
-        ):
-            mark("verify_share")
-            return finish(False, P.LOW_DIFF_CODE, "share does not meet target")
-        mark("verify_share")
+        share_id = ctx.candidate.share_id()
+        if share_id in self.sharechain or share_id in self._pending_shares:
+            mark("duplicate_check")
+            return finish(True, message="duplicate")
 
-        # 2. Record the share on the sidechain (PoW already verified above).
-        proof_bytes = submission.plain_proof_b64.encode("ascii")
-        added = self.sharechain.add_share(ctx.candidate, verified=True, proof=proof_bytes)
-        mark("sharechain_add")
-        if not added.accepted:
-            if added.reason == "duplicate" and ctx.candidate.share_id() in self.sharechain:
-                return finish(True, message="duplicate")
-            return finish(False, P.STALE_SHARE_CODE, added.reason or "share rejected")
-
-        # 3. Non-ACK-critical follow-up: gossip, payout stats, block-target check,
-        #    possible block submission, and fresh jobs for miners.
-        if self._broadcast_share is not None:
-            self._spawn_background(
-                "share gossip",
-                self._broadcast_share(ctx.candidate, submission.plain_proof_b64),
-            )
+        # 1. Fast ACK: expensive proof verification and sharechain mutation happen
+        #    after the miner response, so miner-reported ping tracks network RTT.
+        self._pending_shares.add(share_id)
         self._spawn_background(
-            "submit follow-up",
-            self._run_submit_followup(submission, ctx, header_bytes),
+            "submit validation",
+            self._run_submit_validation(submission, ctx, header_bytes, share_nbits),
         )
-        mark("schedule_followup")
+        mark("schedule_validation")
         return finish(True)
 
     async def _assemble_and_submit(self, ctx: _JobContext, plain_proof_b64: str) -> None:

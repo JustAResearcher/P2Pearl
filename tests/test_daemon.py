@@ -13,6 +13,7 @@ import json
 import os
 import struct
 import sys
+import threading
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -82,6 +83,18 @@ class _SlowBroadcast:
         await self.release.wait()
 
 
+class _SlowVerifyShare:
+    def __init__(self, result=True):
+        self.result = result
+        self.called = threading.Event()
+        self.release = threading.Event()
+
+    def __call__(self, *args):
+        self.called.set()
+        self.release.wait()
+        return self.result
+
+
 class _RefreshRecorder:
     def __init__(self):
         self.called = asyncio.Event()
@@ -106,11 +119,13 @@ async def _drain_background(node):
 
 def _node(sc, *, verify_share=True, verify_block=False, assemble="BLOCKHEX",
           submit_block=None, broadcast_share=None, broadcast_block=None, stratum=None):
+    verify_share_fn = verify_share if callable(verify_share) else (lambda *a: verify_share)
+    verify_block_fn = verify_block if callable(verify_block) else (lambda *a: verify_block)
     return PoolNode(
         sharechain=sc,
         make_header=_fake_make_header,
-        verify_share=(lambda *a: verify_share),
-        verify_block=(lambda *a: verify_block),
+        verify_share=verify_share_fn,
+        verify_block=verify_block_fn,
         assemble_block=(lambda ctx, proof: assemble),
         submit_block=submit_block or _noop,
         broadcast_share=broadcast_share,
@@ -274,6 +289,10 @@ def test_handle_submit_ack_not_blocked_by_share_gossip():
     asyncio.run(_submit_ack_not_blocked_by_share_gossip())
 
 
+def test_handle_submit_ack_not_blocked_by_share_verification():
+    asyncio.run(_submit_ack_not_blocked_by_share_verification())
+
+
 def test_stratum_refresh_requests_are_coalesced():
     asyncio.run(_stratum_refresh_requests_are_coalesced())
 
@@ -316,6 +335,27 @@ async def _submit_ack_not_blocked_by_share_gossip():
     await _drain_background(node)
 
 
+async def _submit_ack_not_blocked_by_share_verification():
+    sc = Sharechain(window=10)
+    verify = _SlowVerifyShare()
+    node = _node(sc, verify_share=verify, verify_block=False)
+    node.set_template(TEMPLATE)
+    header_hex, target, height, ctx = node.build_job_for(ADDR_A)
+    job = StratumJob("00001000-verify", header_hex, target, height, ctx)
+
+    res = await asyncio.wait_for(
+        node.handle_submit(Submission(ADDR_A, "rigA", job, PROOF_B64)),
+        timeout=0.2,
+    )
+
+    assert res.accepted
+    assert len(sc) == 0
+    assert await asyncio.to_thread(verify.called.wait, 0.2)
+    verify.release.set()
+    await _drain_background(node)
+    assert len(sc) == 1
+
+
 async def _stratum_refresh_requests_are_coalesced():
     sc = Sharechain(window=10)
     stratum = _SlowStratum()
@@ -350,8 +390,8 @@ async def _share_flow():
     job = StratumJob("00001000-0001", header_hex, target, height, ctx)
     res = await node.handle_submit(Submission(ADDR_A, "rigA", job, PROOF_B64))
     assert res.accepted
-    assert len(sc) == 1 and sc.tip().miner_address == ADDR_A
     await _drain_background(node)
+    assert len(sc) == 1 and sc.tip().miner_address == ADDR_A
     assert len(bshare.calls) == 1                 # share gossiped
     assert not bblock.calls and not sblock.calls  # not a block
 
@@ -372,8 +412,8 @@ async def _duplicate_same_job_flow():
     second = await node.handle_submit(Submission(ADDR_A, "rigA", job, PROOF_B64))
 
     assert first.accepted and second.accepted
-    assert len(sc) == 1
     await _drain_background(node)
+    assert len(sc) == 1
     assert len(bshare.calls) == 1
 
 
@@ -406,8 +446,8 @@ async def _cert_version_flow():
     header_hex, target, height, ctx = node.build_job_for(ADDR_A)
     job = StratumJob("00001000-0004", header_hex, target, height, ctx)
     assert (await node.handle_submit(Submission(ADDR_A, "rigA", job, PROOF_B64))).accepted
-    assert seen["share_args"][-1] == 2
     await _drain_background(node)
+    assert seen["share_args"][-1] == 2
     assert seen["block_args"][-1] == 2
 
 
@@ -575,7 +615,8 @@ async def _reject_flow():
     header_hex, target, height, ctx = node.build_job_for(ADDR_A)
     job = StratumJob("00001000-0003", header_hex, target, height, ctx)
     res = await node.handle_submit(Submission(ADDR_A, "rigA", job, PROOF_B64))
-    assert not res.accepted and res.error_code == 23   # LOW_DIFF
+    assert res.accepted                                # fast ACK; validation is post-ACK
+    await _drain_background(node)
     assert len(sc) == 0                                # sidechain untouched
 
 
