@@ -12,10 +12,10 @@ from p2pearl.consensus.sharechain import GENESIS_PREV, Sharechain  # noqa: E402
 from p2pearl.consensus.subsidy import block_subsidy  # noqa: E402
 
 Z = b"\x00" * 32
-T = BOOTSTRAP_SHARE_TARGET  # difficulty 64
+T = BOOTSTRAP_SHARE_TARGET
 
 
-def mk(prev, height, *, miner="prlA", target=T, ts=None, uncles=None, parent_height=1,
+def mk(prev, height, *, miner="prlA", target=T, target_limit=None, ts=None, uncles=None, parent_height=1,
        version=SIDECHAIN_VERSION, coinbase_value=None):
     # Default timestamps are spaced exactly SHARE_TARGET_TIME (10s) apart, so the
     # consensus retarget holds the bootstrap target at every height and the helper
@@ -28,6 +28,7 @@ def mk(prev, height, *, miner="prlA", target=T, ts=None, uncles=None, parent_hei
         parent_height=parent_height,
         timestamp=(1000 + 10 * height) if ts is None else ts,
         share_target=target,
+        target_limit=target if target_limit is None else target_limit,
         block_nbits=0x1E01FFFF,
         coinbase_version=0x20000000,
         coinbase_value=block_subsidy(parent_height) if coinbase_value is None else coinbase_value,
@@ -257,11 +258,28 @@ def test_genesis_bad_share_target_rejected():
     assert not r.accepted and r.reason == "bad share target"
 
 
+def test_genesis_harder_share_target_with_bootstrap_limit_accepted():
+    sc = Sharechain(window=8)
+    g = mk(GENESIS_PREV, 0, target=T // 4, target_limit=T)
+    r = add(sc, g)
+    assert r.accepted and sc.tip().share_target == T // 4
+    assert sc.tip().target_limit == T
+
+
 def test_child_bad_share_target_rejected():
     sc = Sharechain(window=8)
     g = _genesis(sc)
     r = add(sc, mk(g.share_id(), 1, target=T // 2))   # consensus demands T (carry)
     assert not r.accepted and r.reason == "bad share target"
+
+
+def test_child_harder_share_target_with_expected_limit_accepted():
+    sc = Sharechain(window=8)
+    g = _genesis(sc)
+    s1 = mk(g.share_id(), 1, target=T // 4, target_limit=T)
+    r = add(sc, s1)
+    assert r.accepted
+    assert dict(sc.pplns_weights())[s1.miner_address] == 4 * g.difficulty()
 
 
 def test_bad_coinbase_value_rejected():

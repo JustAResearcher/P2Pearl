@@ -4,7 +4,7 @@
 
 P2Pearl is a mining pool with **no company behind it**: no operator, no account, no signup, and a **0 % fee**. When the pool finds a block, the block itself pays every recent miner their share, straight to their own wallet. There is nobody to take a cut, run off with funds, or get shut down — the same idea as Monero's P2Pool, built for Pearl.
 
-[![release](https://img.shields.io/github/v/release/JustAResearcher/P2Pearl)](https://github.com/JustAResearcher/P2Pearl/releases/latest) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE) ![tests](https://img.shields.io/badge/tests-139%20passing-brightgreen)
+[![release](https://img.shields.io/github/v/release/JustAResearcher/P2Pearl)](https://github.com/JustAResearcher/P2Pearl/releases/latest) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE) ![tests](https://img.shields.io/badge/tests-143%20passing-brightgreen)
 
 <p align="center"><img src="docs/img/gui.png" alt="The P2Pearl control panel" width="640"></p>
 
@@ -91,6 +91,7 @@ For the daemon itself there is **no config file** — it is configured entirely 
 | `--rpc-pass` | `pass` | `pearld` RPC password (must match `--rpcpass`). Prefer the env var below. |
 | `--stratum-host` | `0.0.0.0` | Bind address for the miner-facing stratum listener. Use `127.0.0.1` to accept only local miners. |
 | `--stratum-port` | `3360` | The port miners point `--pool` at. |
+| `--stratum-target-factor` | `16` | Vardiff factor for directly connected miners. `16` asks for shares 16x harder than the sidechain target limit, so miners submit fewer large proof frames; v5 peers credit the harder share difficulty correctly. Use `1` to disable. |
 | `--p2p-host` | `0.0.0.0` | Bind address for the share-gossip listener. |
 | `--p2p-port` | `37900` | The port other operators `--peer` to. |
 | `--peer HOST:PORT` | *(none)* | Another operator's P2P endpoint. **Repeatable.** With no peers you run a solo pool (still feeless, still PPLNS across your own miners). Peering merges everyone into ONE pool: shares gossip both ways, every node trustlessly re-verifies them, and any node's block pays the whole network's window. New nodes window-sync the recent sharechain automatically on connect. |
@@ -136,11 +137,11 @@ These define the sidechain itself. **Every node on a sidechain must agree on all
 
 | Constant | Value | Meaning |
 |---|---|---|
-| `SIDECHAIN_VERSION` | `4` | Share format/rules version. v4 = timestamp-aware retarget + subsidy-exact coinbase. Older shares are rejected (and vice versa), so all peered nodes must run the same major version. |
+| `SIDECHAIN_VERSION` | `5` | Share format/rules version. v5 = vardiff `share_target` plus retarget-derived `target_limit`. Older shares are rejected (and vice versa), so all peered nodes must run the same major version. |
 | `SHARE_TARGET_TIME_SECONDS` | `10` | The retarget aims for one share per 10 s **pool-wide**. |
 | `RETARGET_WINDOW_SHARES` | `60` | Work-rate look-back for the retarget (~10 min of shares). |
 | `RETARGET_CLAMP` | `4` | A share's target may move at most 4× per share, either direction (damps oscillation and timestamp games). |
-| `BOOTSTRAP_SHARE_TARGET` | difficulty 64 | The genesis share target; the retarget takes over from share #2. Override per-deployment with `--share-target` (consensus!). |
+| `BOOTSTRAP_SHARE_TARGET` | difficulty `2^50` | The genesis target limit; the retarget takes over from share #2. Override per-deployment with `--share-target` (consensus!). |
 | `MAX_TIMESTAMP_DRIFT_SECONDS` | `300` | Shares stamped >5 min into the future are rejected (protects the retarget). |
 | `PPLNS_WINDOW_SHARES` | `1000` | The coinbase pays the miners of the last N shares, proportional to share difficulty (~2.8 h of shares at target rate). |
 | `UNCLE_BLOCK_DEPTH` / `UNCLE_PENALTY_PERCENT` | `3` / `20` | Orphaned-but-recent shares still count: full weight for chain selection, 80 % weight for payout. |
@@ -148,7 +149,7 @@ These define the sidechain itself. **Every node on a sidechain must agree on all
 
 Two consensus rules worth knowing as an operator:
 
-- **Share targets are not negotiable.** Every share must carry exactly the target the sharechain derives for its position (`Sharechain.expected_target`). Your node computes it, stamps it into jobs, and rejects any gossiped share that disagrees — so no peer can manufacture cheap weight or flood the chain.
+- **Target limits are not negotiable.** Every share must carry exactly the target limit the sharechain derives for its position (`Sharechain.expected_target`). The actual `share_target` may be harder for vardiff; peers verify proof at that harder target and credit its difficulty, while rejecting any share whose target limit disagrees or whose target is too easy.
 - **Coinbase values are subsidy-exact.** Shares are coinbase-only (no mempool transactions yet), and every share's `coinbase_value` must equal Pearl's emission schedule for its height — replicated from `pearld`'s `CalcBlockSubsidy` and validated grain-for-grain against a live node. A finder cannot inflate the pot, and your blocks can never overpay (which `pearld` would reject).
 
 ### Running as a service (systemd)
@@ -195,7 +196,7 @@ The only latency between *finding* a block and *announcing* it is generating its
 | SRBMiner shows alternating accepted / `duplicate` shares | Update to v0.0.21 or newer. Fast GPUs can submit an extra proof against the previous clean job; P2Pearl treats that harmless duplicate as an idempotent success. |
 | Miner connects but never gets a job | The daemon primes its first job from `getblocktemplate` — if `pearld` is mid-sync, GBT errors until it reaches the tip. Wait for sync. |
 | Shares rejected: `share does not meet target` | Normal occasionally (the miner raced a retarget/job refresh). Constant rejections → miner is on the wrong algorithm or a stale connection; restart the miner. |
-| Gossiped shares rejected: `bad share target` / `bad coinbase value` | The peer is on different consensus (old version, or a different `--share-target` bootstrap). All nodes must run the same `SIDECHAIN_VERSION` and genesis target. |
+| Gossiped shares rejected: `bad share target` / `bad coinbase value` | The peer is on different consensus (old version, a different `--share-target` bootstrap, or a target limit your chain does not derive). All nodes must run the same `SIDECHAIN_VERSION` and genesis target. |
 | Peer connect fails | Their `37900` isn't reachable (port-forward/firewall), or version mismatch. Outbound `--peer` needs no forwarding on *your* side. |
 | Block found but not on-chain | Likely orphaned — another miner found the height first while proving. Keep the prover fast (`--pause-cmd`, peers for collaborative submit). |
 | No window opens on Linux | Headless session (SSH) — the binary says so and points you at `p2pearl daemon`. The GUI needs a desktop. |
@@ -224,7 +225,7 @@ The one genuinely Pearl-specific constraint is **share/proof size on the wire** 
                   SRBMiner / GPU fleet (unchanged - just repoint --pool)
 ```
 
-> **Decentralization:** nodes form one shared pool by **gossiping shares over P2P** (`--peer`). Each incoming share is **trustlessly verified** — a peer recomputes the deterministic PPLNS payouts from its *own* sharechain, confirms the share commits to exactly that set, reconstructs the byte-identical header, verifies the proof at the consensus share target, and checks the coinbase value against Pearl's emission schedule. A finder can forge neither the PoW, the reward split, the difficulty, nor the pot size. Validated end-to-end on the public testnet with independent operators.
+> **Decentralization:** nodes form one shared pool by **gossiping shares over P2P** (`--peer`). Each incoming share is **trustlessly verified** — a peer recomputes the deterministic PPLNS payouts from its *own* sharechain, confirms the share commits to exactly that set, reconstructs the byte-identical header, verifies the proof at the share's actual `share_target`, confirms its retarget-derived `target_limit`, and checks the coinbase value against Pearl's emission schedule. A finder can forge neither the PoW, the reward split, the difficulty, nor the pot size. Validated end-to-end on the public testnet with independent operators.
 
 **Why Python?** The entire reusable surface from the Pearl repo is Python: the gateway's `getblocktemplate` -> coinbase -> `submitblock` path, the `pearl-stratum-srv` stratum server + PPLNS split, and the `pearl_mining` (PyO3) verification bindings. The original Bitcoin P2Pool was also Python. Share throughput is low (~1 share / 10 s globally), so Python is fine for the sidechain/P2P layer; the perf-critical proof verification already lives in compiled Rust behind `pearl_mining`. See [`docs/blueprint.md`](docs/blueprint.md) for the full, source-grounded design.
 
@@ -250,7 +251,7 @@ src/p2pearl/
   p2p/node.py            gossip: announce/on-demand proof fetch, relay, window sync
   gui.py                 the tkinter control panel (settings + start/stop + live log)
   daemon.py              PoolNode orchestrator: per-miner jobs, verify, block path
-tests/                   unit tests (139 passing)
+tests/                   unit tests (143 passing)
 docs/                    blueprint + running-a-node guide
 tools/apply_m2_binding.py  one-step additive patch for a stock Pearl checkout
 integration/             cross-repo notes (py-pearl-mining binding, stratum dialect)

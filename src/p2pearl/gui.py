@@ -48,6 +48,7 @@ DEFAULTS = {
     "network": "mainnet",        # managed pearld network
     "stratum_host": "0.0.0.0",
     "stratum_port": "3360",
+    "stratum_target_factor": str(config.STRATUM_TARGET_FACTOR),
     "p2p_host": "0.0.0.0",
     "p2p_port": "37900",
     "peers": "",                 # one host:port per line
@@ -100,6 +101,7 @@ def build_daemon_args(settings: dict) -> list[str]:
         args += ["--rpc-pass", s["rpc_pass"]]
     args += ["--stratum-host", s["stratum_host"].strip() or "0.0.0.0",
              "--stratum-port", s["stratum_port"].strip() or "3360",
+             "--stratum-target-factor", s["stratum_target_factor"].strip() or str(config.STRATUM_TARGET_FACTOR),
              "--p2p-host", s["p2p_host"].strip() or "0.0.0.0",
              "--p2p-port", s["p2p_port"].strip() or "37900"]
     for line in s["peers"].splitlines():
@@ -457,15 +459,18 @@ def main() -> int:
     adv_box.columnconfigure(1, weight=1)
     add_entry(adv_box, 0, 0, "Stratum bind", "stratum_host", hint="0.0.0.0 = all interfaces")
     add_entry(adv_box, 1, 0, "P2P bind", "p2p_host")
-    add_entry(adv_box, 2, 0, "Genesis share target", "share_target",
+    add_entry(adv_box, 2, 0, "Target factor", "stratum_target_factor", width=8,
+              hint="higher = fewer, harder miner submits")
+    add_entry(adv_box, 3, 0, "Genesis share target", "share_target",
               hint="consensus — leave empty unless bootstrapping a new sidechain")
-    add_entry(adv_box, 3, 0, "Pause cmd (pre-prove)", "pause_cmd", width=34,
+    add_entry(adv_box, 4, 0, "Pause cmd (pre-prove)", "pause_cmd", width=34,
               hint="e.g. pkill -STOP -x xmrig")
-    add_entry(adv_box, 4, 0, "Resume cmd", "resume_cmd", width=34,
+    add_entry(adv_box, 5, 0, "Resume cmd", "resume_cmd", width=34,
               hint="e.g. pkill -CONT -x xmrig")
 
     adv_shown = tk.BooleanVar(value=any(settings[k].strip() not in ("", DEFAULTS[k])
-                                        for k in ("stratum_host", "p2p_host", "share_target",
+                                        for k in ("stratum_host", "p2p_host",
+                                                  "stratum_target_factor", "share_target",
                                                   "pause_cmd", "resume_cmd")))
 
     def toggle_adv():

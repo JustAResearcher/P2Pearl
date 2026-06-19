@@ -16,8 +16,8 @@ It tolerates BOTH Pearlhash stratum dialects (object / LuckyPool / Herominers, w
 SRBMiner speaks, and positional / alphapool) so the production fleet connects with no
 miner changes — see ``protocol`` and ``docs/blueprint.md`` §4.7. Architecture mirrors
 the Pearl repo's ``pearl-stratum-srv`` (async listener, per-connection task, bounded
-job registry, mint->broadcast seam), minus the public-pool concerns (vardiff,
-``pearl.challenge``) which the P2P layer handles instead.
+job registry, mint->broadcast seam), minus the public-pool ``pearl.challenge`` flow
+which the P2P layer handles instead.
 """
 
 from __future__ import annotations

@@ -130,10 +130,12 @@ async def _noop(*args):
 async def _drain_background(node):
     while node._background_tasks:
         await asyncio.gather(*list(node._background_tasks))
+        await asyncio.sleep(0)
 
 
 def _node(sc, *, verify_share=True, verify_block=False, assemble="BLOCKHEX",
-          submit_block=None, broadcast_share=None, broadcast_block=None, stratum=None):
+          submit_block=None, broadcast_share=None, broadcast_block=None, stratum=None,
+          stratum_target_factor=1):
     verify_share_fn = verify_share if callable(verify_share) else (lambda *a: verify_share)
     verify_block_fn = verify_block if callable(verify_block) else (lambda *a: verify_block)
     return PoolNode(
@@ -146,6 +148,7 @@ def _node(sc, *, verify_share=True, verify_block=False, assemble="BLOCKHEX",
         broadcast_share=broadcast_share,
         broadcast_block=broadcast_block,
         stratum=stratum,
+        stratum_target_factor=stratum_target_factor,
     )
 
 
@@ -165,6 +168,18 @@ def test_build_job_for_creates_candidate():
     assert ctx.candidate.miner_address == ADDR_A
     assert ctx.candidate.prev_share_id == GENESIS_PREV
     assert node.build_job_for(None) is None          # no worker address
+
+
+def test_build_job_for_applies_stratum_target_factor():
+    sc = Sharechain(window=10, bootstrap_target=SHARE_TARGET)
+    node = _node(sc, stratum_target_factor=8)
+    node.set_template(TEMPLATE)
+    spec = node.build_job_for(ADDR_A)
+    assert spec is not None
+    _header_hex, target, _height, ctx = spec
+    assert target == SHARE_TARGET // 8
+    assert ctx.candidate.share_target == SHARE_TARGET // 8
+    assert ctx.candidate.target_limit == SHARE_TARGET
 
 
 def test_jobs_use_live_monotonic_timestamps_for_retarget(monkeypatch):

@@ -111,11 +111,11 @@ class Sharechain:
         return self._validate(share, now)[0]
 
     def expected_target(self, prev_share_id: bytes, timestamp: int | None = None) -> int | None:
-        """The share_target consensus REQUIRES of a share extending ``prev_share_id``.
+        """The maximum share target consensus allows after ``prev_share_id``.
 
         Deterministic from the chain alone, so the finder (``build_job_for``) and
         every verifying peer (``_validate``) derive the identical value: the
-        bootstrap target for a genesis share, then :func:`retarget_target` over
+        bootstrap target limit for a genesis share, then :func:`retarget_target` over
         the work-rate of the last ``retarget_window`` shares ending at the parent.
 
         Returns ``None`` when the target CANNOT be derived deterministically:
@@ -142,13 +142,13 @@ class Sharechain:
             work = sum(s.difficulty() for s in shares)
             span = int(timestamp) - shares[-1].timestamp
             return retarget_target(
-                entry.share.share_target, work, span, self.share_time, config.RETARGET_CLAMP)
+                int(entry.share.target_limit), work, span, self.share_time, config.RETARGET_CLAMP)
         if len(shares) < 2:
-            return entry.share.share_target  # no interval to measure yet — carry
+            return int(entry.share.target_limit)  # no interval to measure yet — carry
         work = sum(s.difficulty() for s in shares[:-1])  # work mined during the span
         span = shares[0].timestamp - shares[-1].timestamp
         return retarget_target(
-            entry.share.share_target, work, span, self.share_time, config.RETARGET_CLAMP)
+            int(entry.share.target_limit), work, span, self.share_time, config.RETARGET_CLAMP)
 
     # ------------------------------------------------------------------ mutation
     def add_share(
@@ -248,7 +248,7 @@ class Sharechain:
                 return False, "genesis height != 0"
             if share.uncle_ids:
                 return False, "genesis with uncles"
-            if share.share_target != self.bootstrap_target:
+            if share.target_limit != self.bootstrap_target:
                 return False, "bad share target"
             return True, ""
 
@@ -263,7 +263,7 @@ class Sharechain:
         if share.parent_height < parent.parent_height:
             return False, "parent height regression"
         expected = self.expected_target(share.prev_share_id, share.timestamp)
-        if expected is not None and share.share_target != expected:
+        if expected is not None and share.target_limit != expected:
             return False, "bad share target"
 
         ancestors, ancestor_uncles = self._recent(share.prev_share_id, self.uncle_depth + 1)

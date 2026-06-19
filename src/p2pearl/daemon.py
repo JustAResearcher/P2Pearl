@@ -242,6 +242,7 @@ class PoolNode:
         post_assemble: AssembleHook | None = None,
         make_header_from_share: MakeHeaderFromShare | None = None,
         min_payout_grains: int = config.MIN_PAYOUT_GRAINS,
+        stratum_target_factor: int = 1,
     ) -> None:
         self.sharechain = sharechain
         self._make_header = make_header
@@ -256,6 +257,7 @@ class PoolNode:
         self._post_assemble = post_assemble
         self._make_header_from_share = make_header_from_share
         self._min_payout = min_payout_grains
+        self._stratum_target_factor = max(1, int(stratum_target_factor))
         self._template: ParentTemplate | None = None
         self._background_tasks: set[asyncio.Task] = set()
         self._pending_shares: set[bytes] = set()
@@ -423,13 +425,14 @@ class PoolNode:
         )
         job_template = replace(template, curtime=share_timestamp)
         # Consensus values — what _validate will demand of the submitted share:
-        # the chain-derived share target, and the EXACT parent subsidy (shares are
+        # the chain-derived target limit, and the EXACT parent subsidy (shares are
         # coinbase-only, so GBT's coinbasevalue — subsidy + mempool fees — would
         # overpay and make the assembled block invalid for the parent chain).
-        share_target = self.sharechain.expected_target(prev_share_id, share_timestamp)
-        if share_target is None:
-            share_target = tip.share_target   # truncated local history right after a
-                                              # window sync — carry the tip's target
+        target_limit = self.sharechain.expected_target(prev_share_id, share_timestamp)
+        if target_limit is None:
+            target_limit = int(tip.target_limit)   # truncated local history right after a
+                                                   # window sync — carry the tip's limit
+        share_target = max(1, target_limit // self._stratum_target_factor)
         coinbase_value = block_subsidy(template.height)
 
         weights = self.sharechain.pplns_weights()
@@ -444,6 +447,7 @@ class PoolNode:
             parent_height=template.height,
             timestamp=share_timestamp,
             share_target=share_target,
+            target_limit=target_limit,
             block_nbits=template.bits,
             coinbase_version=template.version,
             coinbase_value=coinbase_value,
@@ -873,6 +877,7 @@ def build_production_node(cfg: config.DaemonConfig | None = None, share_target: 
         submit_block=submit_block,
         pre_assemble=_shell_hook(pause_cmd),     # e.g. pause a co-located XMR miner
         post_assemble=_shell_hook(resume_cmd),   # ...and resume it after the prove
+        stratum_target_factor=cfg.stratum_target_factor,
     )
     # Miner-facing stratum: each connecting miner gets its OWN job (its own PPLNS
     # coinbase). build_job_for is the per-connection job source; handle_submit grades

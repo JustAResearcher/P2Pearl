@@ -24,6 +24,7 @@ from hashlib import sha256
 
 MAX_TARGET = (1 << 256) - 1
 _HASH32 = 32
+_TARGET_LIMIT_VERSION = 5
 
 
 def double_sha256(data: bytes) -> bytes:
@@ -71,6 +72,7 @@ class ShareBlock:
     coinbase_value: int              # u64  total grains the coinbase distributes (subsidy [+ fees])
     miner_address: str               # bech32m P2TR payout address of this share's finder
     payout_set_hash: bytes           # 32   binds the deterministic PPLNS coinbase output set
+    target_limit: int | None = None   # 256-bit retarget-derived max target; v5+ committed
     uncle_ids: list[bytes] = field(default_factory=list)  # each 32; GHOST uncles referenced by this share
     # NON-committed PoW evidence: set AFTER mining; excluded from serialize()/share_id so the
     # parent coinbase OP_RETURN can commit to share_id BEFORE the solution exists. Carried
@@ -87,6 +89,12 @@ class ShareBlock:
                 raise ValueError("each uncle id must be 32 bytes")
         if not (0 < self.share_target <= MAX_TARGET):
             raise ValueError("share_target out of range")
+        if self.target_limit is None:
+            self.target_limit = self.share_target
+        if not (0 < self.target_limit <= MAX_TARGET):
+            raise ValueError("target_limit out of range")
+        if self.share_target > self.target_limit:
+            raise ValueError("share_target exceeds target_limit")
 
     def serialize(self) -> bytes:
         out = bytearray()
@@ -97,6 +105,8 @@ class ShareBlock:
         out += struct.pack("<I", self.parent_height)
         out += struct.pack("<I", self.timestamp)
         out += self.share_target.to_bytes(32, "big")
+        if self.version >= _TARGET_LIMIT_VERSION:
+            out += int(self.target_limit).to_bytes(32, "big")
         out += struct.pack("<I", self.block_nbits)
         out += struct.pack("<I", self.coinbase_version)
         out += struct.pack("<Q", self.coinbase_value)
@@ -118,6 +128,10 @@ class ShareBlock:
         parent_height = struct.unpack_from("<I", data, off)[0]; off += 4
         timestamp = struct.unpack_from("<I", data, off)[0]; off += 4
         share_target = int.from_bytes(data[off:off + 32], "big"); off += 32
+        if version >= _TARGET_LIMIT_VERSION:
+            target_limit = int.from_bytes(data[off:off + 32], "big"); off += 32
+        else:
+            target_limit = share_target
         block_nbits = struct.unpack_from("<I", data, off)[0]; off += 4
         coinbase_version = struct.unpack_from("<I", data, off)[0]; off += 4
         coinbase_value = struct.unpack_from("<Q", data, off)[0]; off += 8
@@ -141,6 +155,7 @@ class ShareBlock:
             coinbase_value=coinbase_value,
             miner_address=miner_address,
             payout_set_hash=payout_set_hash,
+            target_limit=target_limit,
             uncle_ids=uncle_ids,
         )
 

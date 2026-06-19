@@ -45,6 +45,7 @@ def test_build_daemon_args_basic():
     assert args[0] == "daemon"
     assert args[args.index("--rpc-url") + 1] == "http://127.0.0.1:44107"
     assert args[args.index("--stratum-port") + 1] == "3360"
+    assert args[args.index("--stratum-target-factor") + 1] == DEFAULTS["stratum_target_factor"]
     assert args[args.index("--p2p-port") + 1] == "37900"
     assert "--peer" not in args and "--share-target" not in args
 

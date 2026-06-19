@@ -15,6 +15,7 @@ import asyncio
 import sys
 
 from . import __version__
+from . import config as config_defaults
 
 
 def _double_clicked() -> bool:
@@ -53,6 +54,9 @@ def main(argv: list[str] | None = None) -> int:
     dp.add_argument("--rpc-pass", help="pearld RPC password (or env P2PEARL_RPC_PASS; default 'pass')")
     dp.add_argument("--stratum-host", default="0.0.0.0", help="stratum bind host (default 0.0.0.0)")
     dp.add_argument("--stratum-port", type=int, default=3360, help="stratum port (default 3360)")
+    dp.add_argument("--stratum-target-factor", type=int, default=None,
+                    help="ask miners for shares this many times harder than the sidechain target "
+                         f"(default {config_defaults.STRATUM_TARGET_FACTOR}; 1 disables)")
     dp.add_argument("--p2p-host", default="0.0.0.0", help="P2P bind host (default 0.0.0.0)")
     dp.add_argument("--p2p-port", type=int, default=37900, help="P2P port (default 37900)")
     dp.add_argument("--peer", action="append", metavar="HOST:PORT",
@@ -104,7 +108,11 @@ def main(argv: list[str] | None = None) -> int:
                     peers.append((host, int(port)))
             dcfg = cfgmod.DaemonConfig(
                 node=node_cfg, stratum_host=args.stratum_host, stratum_port=args.stratum_port,
-                p2p_host=args.p2p_host, p2p_port=args.p2p_port, peers=tuple(peers))
+                p2p_host=args.p2p_host, p2p_port=args.p2p_port,
+                stratum_target_factor=(args.stratum_target_factor
+                                       if args.stratum_target_factor is not None
+                                       else cfgmod.STRATUM_TARGET_FACTOR),
+                peers=tuple(peers))
             st = int(args.share_target, 0) if args.share_target else None
             return daemon.main(cfg=dcfg, share_target=st,
                                pause_cmd=args.pause_cmd, resume_cmd=args.resume_cmd)
