@@ -78,6 +78,7 @@ def _emit_submit_timing(
 # asyncio's default 64 KiB readline limit would raise LimitOverrunError on the first
 # real submit, so the listener must be opened with a larger stream limit.
 READ_LIMIT = 2 ** 20
+SEND_TIMEOUT_SECONDS = 5.0
 
 _VALID_HRPS = ("prl1", "tprl1", "sprl1", "rprl1")
 _BECH32_CHARSET = frozenset("qpzry9x8gf2tvdw0s3jn54khce6mua7l")
@@ -201,8 +202,23 @@ class _Connection:
     async def send(self, frame: bytes) -> None:
         # Serialize writes so a broadcast notify can't interleave with a reply.
         async with self._send_lock:
+            if self.writer.is_closing():
+                raise ConnectionError("connection closing")
             self.writer.write(frame)
-            await self.writer.drain()
+            try:
+                await asyncio.wait_for(self.writer.drain(), timeout=SEND_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError as exc:
+                self.close()
+                raise ConnectionError("send timed out") from exc
+            except (ConnectionError, OSError):
+                self.close()
+                raise
+
+    def close(self) -> None:
+        try:
+            self.writer.close()
+        except Exception:
+            pass
 
     async def run(self) -> None:
         while True:
@@ -214,7 +230,10 @@ class _Connection:
                 break          # EOF
             if not line.strip():
                 continue
-            await self._dispatch(line)
+            try:
+                await self._dispatch(line)
+            except (ConnectionError, OSError):
+                break
 
     async def _dispatch(self, line: bytes) -> None:
         try:
@@ -230,6 +249,8 @@ class _Connection:
             return
         try:
             await handler(self, req)
+        except (ConnectionError, OSError):
+            raise
         except Exception as exc:
             _LOGGER.exception("conn %d handler %s failed", self.conn_id, req.method)
             await self.send(P.encode_error(req.id, P.INVALID_PARAMS_CODE, str(exc)))
@@ -391,13 +412,21 @@ class StratumServer:
         return job
 
     async def _broadcast(self, clean: bool) -> None:
-        for conn in list(self._conns):
-            if not conn.ready:
-                continue
+        conns = [conn for conn in sorted(self._conns, key=lambda c: c.conn_id) if conn.ready]
+        if not conns:
+            return
+
+        async def push(conn: _Connection) -> None:
             try:
                 await conn.push_job(clean=clean)
+            except (ConnectionError, OSError) as exc:
+                _LOGGER.info("dropping conn %d during broadcast: %s", conn.conn_id, exc)
+                conn.close()
             except Exception:
                 _LOGGER.exception("broadcast to conn %d failed", conn.conn_id)
+                conn.close()
+
+        await asyncio.gather(*(push(conn) for conn in conns))
 
     async def _on_client(self, reader, writer) -> None:
         self._conn_seq += 1
@@ -407,7 +436,4 @@ class StratumServer:
             await conn.run()
         finally:
             self._conns.discard(conn)
-            try:
-                writer.close()
-            except Exception:
-                pass
+            conn.close()

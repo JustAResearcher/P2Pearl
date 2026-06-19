@@ -101,6 +101,56 @@ def test_job_derived_fields():
     assert pos[0] == "00000001-0001" and pos[2] == HEADER_HEX and pos[6] is True
 
 
+def test_broadcast_does_not_block_on_slow_connection():
+    asyncio.run(_broadcast_not_blocked_by_slow_connection())
+
+
+class _SlowPushConn:
+    conn_id = 1
+    ready = True
+
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.closed = False
+
+    async def push_job(self, clean):
+        self.started.set()
+        await self.release.wait()
+
+    def close(self):
+        self.closed = True
+
+
+class _FastPushConn:
+    conn_id = 2
+    ready = True
+
+    def __init__(self):
+        self.called = asyncio.Event()
+        self.closed = False
+
+    async def push_job(self, clean):
+        self.called.set()
+
+    def close(self):
+        self.closed = True
+
+
+async def _broadcast_not_blocked_by_slow_connection():
+    server = StratumServer(_Recorder(SubmitResult(accepted=True)), host="127.0.0.1", port=0)
+    slow = _SlowPushConn()
+    fast = _FastPushConn()
+    server._conns = {slow, fast}
+
+    task = asyncio.create_task(server.refresh())
+    await asyncio.wait_for(slow.started.wait(), timeout=0.2)
+    await asyncio.wait_for(fast.called.wait(), timeout=0.2)
+    slow.release.set()
+    await asyncio.wait_for(task, timeout=0.2)
+    assert not fast.closed
+
+
 # --------------------------------------------------------------------------- #
 # Object dialect (what SRBMiner speaks)
 # --------------------------------------------------------------------------- #
