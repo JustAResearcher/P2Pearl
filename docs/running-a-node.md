@@ -124,10 +124,18 @@ p2pearl gui        # or: p2pearl daemon --rpc-url http://<pearld-host>:44109 ...
 
 ## Prover speed — avoiding orphaned blocks
 
+The release proof stack should be built with Pearl's CUDA prover. On an RTX 5090 in WSL,
+the CUDA build measured about **5.4s cold / 3.0s warm** for the default GPU path, and about
+**4.5s cold / 2.7s warm** for v2 certificates with the quotient GPU path enabled. P2Pearl
+sets `NUM_OF_GPUS=1`, preloads WSL's matching NVIDIA driver JIT libraries before CUDA
+initializes, and enables the quotient GPU fast path automatically for v2 certificates
+unless `P2PEARL_QUOTIENT_GPU=off` is set. For v1 certificate compatibility tests,
+`PEARL_QUOTIENT_GPU=1` needs `PEARL_QUOTIENT_CHECK=1` or should be left unset.
+
 When your pool finds a block, the node must generate its Pearlhash **ZK certificate**
-(`pearl_mining.generate_proof`) before `submitblock`. That proof is the *entire* latency
+(`pearl_mining.generate_proof_for_cert_version`) before `submitblock`. That proof is the *entire* latency
 between finding a block and announcing it — every second another (non-pool) Pearl miner
-could find the same height and orphan yours. It is CPU-bound recursive proving; the node
+could find the same height and orphan yours. On non-CUDA builds it is CPU-bound recursive proving; the node
 already keeps the event loop responsive (proves in a worker thread), serializes proving,
 and deduplicates so a flood of block-clearing shares proves **once**. Two operator knobs
 make the proof itself much faster (measured on a 16C/32T Ryzen, warm prover):
@@ -156,8 +164,8 @@ make the proof itself much faster (measured on a 16C/32T Ryzen, warm prover):
    the hook's own shell process and would SIGSTOP it. The hook is best-effort and bounded
    by a timeout — a failure or hang is logged and never blocks the found block.
 
-A faster CPU helps proportionally up to ~16 effective threads; a GPU/accelerated prover
-is not available in the upstream plonky2 build (CPU only).
+For CPU-only builds, a faster CPU helps proportionally up to ~16 effective threads. To
+force a CUDA build back to CPU proving for debugging, set `PEARL_GPU_MIN_LG=999`.
 
 > **Status:** validated on the public Pearl testnet — independent operators' shares
 > cross-verify and real blocks pay multiple operators proportionally. The share target

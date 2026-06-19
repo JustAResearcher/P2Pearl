@@ -39,6 +39,8 @@ from .consensus.subsidy import block_subsidy
 from .stratum import protocol as P
 from .stratum.server import StratumServer, Submission, SubmitResult
 
+_PRELOADED_PROVER_LIBS: tuple[str, ...] = ()
+
 
 @dataclass
 class ParentTemplate:
@@ -440,8 +442,18 @@ def _production_assemble_block(header_ctx: dict, plain_proof_b64: str) -> str:
     incomplete = header_ctx["header"]
     cert_version = int(header_ctx.get("cert_version", 1))
     generate = getattr(pearl_mining, "generate_proof_for_cert_version", None)
-    zk_proof = (generate(cert_version, incomplete, proof) if generate
-                else pearl_mining.generate_proof(incomplete, proof))
+    enabled_v2_quotient_gpu = False
+    if cert_version >= 2 and "PEARL_QUOTIENT_GPU" not in os.environ:
+        mode = os.environ.get("P2PEARL_QUOTIENT_GPU", "auto").strip().lower()
+        if mode not in {"0", "false", "no", "off", "disabled"}:
+            os.environ["PEARL_QUOTIENT_GPU"] = "1"
+            enabled_v2_quotient_gpu = True
+    try:
+        zk_proof = (generate(cert_version, incomplete, proof) if generate
+                    else pearl_mining.generate_proof(incomplete, proof))
+    finally:
+        if enabled_v2_quotient_gpu:
+            os.environ.pop("PEARL_QUOTIENT_GPU", None)
     pearl_header = PearlHeader(incomplete)
     try:
         from pearl_gateway.blockchain_utils.zk_certificate import CertificateVersion  # type: ignore
@@ -525,6 +537,41 @@ def _make_header_from_share(sharechain: Sharechain, min_payout: int):
     return reconstruct
 
 
+def _preload_wsl_nvidia_driver_libs() -> tuple[str, ...]:
+    """Preload WSL's matching NVIDIA driver JIT libs before CUDA initializes.
+
+    WSL can mix ``libcuda`` from the Windows driver with older distro
+    ``libnvidia-ptxjitcompiler`` packages. On Blackwell/CUDA 13 this can segfault
+    during ``cudaGetDeviceCount`` before any Pearl code runs.
+    """
+    global _PRELOADED_PROVER_LIBS
+    if sys.platform != "linux":
+        return _PRELOADED_PROVER_LIBS
+    try:
+        with open("/proc/version", "r", encoding="utf-8", errors="ignore") as f:
+            version = f.read().lower()
+    except OSError:
+        return _PRELOADED_PROVER_LIBS
+    if "microsoft" not in version and "wsl" not in version:
+        return _PRELOADED_PROVER_LIBS
+
+    import ctypes
+    import glob
+
+    loaded: list[str] = []
+    for soname in ("libnvidia-ptxjitcompiler.so.1", "libnvidia-nvvm.so.4"):
+        matches = sorted(glob.glob(f"/usr/lib/wsl/drivers/*/{soname}"))
+        if not matches:
+            continue
+        try:
+            ctypes.CDLL(matches[0], mode=ctypes.RTLD_GLOBAL)
+        except OSError:
+            continue
+        loaded.append(matches[0])
+    _PRELOADED_PROVER_LIBS = tuple(loaded)
+    return _PRELOADED_PROVER_LIBS
+
+
 def _ensure_prover_env() -> None:
     """Tune the ZK prover's native runtime BEFORE ``pearl_mining`` is first imported —
     both rayon and jemalloc read their config when the ``.so`` initializes, so this MUST
@@ -538,11 +585,15 @@ def _ensure_prover_env() -> None:
       (~3% faster, measured). tikv-jemalloc reads the ``_rjem_``-prefixed var (NOT plain
       ``MALLOC_CONF``). We deliberately keep default decay — ``dirty_decay_ms:-1``
       (never purge) is faster still but OOMs a memory-constrained node.
+    * ``NUM_OF_GPUS=1`` — drive zeknox's CUDA backend as a single-GPU prover unless
+      the operator explicitly sets a different value.
 
-    Operators may override either by exporting it themselves (honored via ``setdefault``).
+    Operators may override these by exporting them themselves (honored via ``setdefault``).
     """
+    _preload_wsl_nvidia_driver_libs()
     os.environ.setdefault("RAYON_NUM_THREADS", str(os.cpu_count() or 1))
     os.environ.setdefault("_RJEM_MALLOC_CONF", "background_thread:true")
+    os.environ.setdefault("NUM_OF_GPUS", "1")
 
 
 HOOK_TIMEOUT_SECONDS = 10.0   # a found block must NEVER wait forever on a hook
@@ -678,7 +729,11 @@ async def _serve(pool: "PoolNode", node: Any, peers=()) -> None:
         print(f"  p2p         : {pool.p2p.host}:{pool.p2p.port}  ({pool.p2p.peer_count} peer(s) connected)", flush=True)
     print(f"  prover      : RAYON_NUM_THREADS={os.environ.get('RAYON_NUM_THREADS')}"
           f"  jemalloc={os.environ.get('_RJEM_MALLOC_CONF')}"
+          f"  NUM_OF_GPUS={os.environ.get('NUM_OF_GPUS')}"
+          f"  quotient-gpu={os.environ.get('P2PEARL_QUOTIENT_GPU', 'auto-v2')}"
           + ("  + pause-hook during prove" if pool._pre_assemble is not None else ""), flush=True)
+    if _PRELOADED_PROVER_LIBS:
+        print(f"  gpu libs    : preloaded {len(_PRELOADED_PROVER_LIBS)} WSL NVIDIA driver lib(s)", flush=True)
     s_host, s_port = pool.stratum.host, pool.stratum.port
     print(f"  stratum     : {s_host}:{s_port}  (point your miners here)", flush=True)
     print(f"  e.g.  SRBMiner-MULTI --algorithm pearlhash --pool {s_host}:{s_port} --wallet <prl1...> --disable-cpu", flush=True)

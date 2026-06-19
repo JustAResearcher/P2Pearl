@@ -15,11 +15,13 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+import p2pearl.daemon as daemon_mod  # noqa: E402
 from p2pearl.consensus.share import ShareBlock  # noqa: E402
 from p2pearl.consensus.sharechain import GENESIS_PREV, Sharechain  # noqa: E402
 from p2pearl.daemon import (  # noqa: E402
     ParentTemplate,
     PoolNode,
+    _ensure_prover_env,
     format_payout_estimate,
     payout_estimate_snapshot,
     serialize_payouts,
@@ -103,6 +105,18 @@ def test_parent_template_reads_required_cert_version():
         "requiredcertversion": 2,
     }
     assert ParentTemplate.from_gbt(gbt).required_cert_version == 2
+
+
+def test_ensure_prover_env_sets_cuda_defaults(monkeypatch):
+    for key in ("RAYON_NUM_THREADS", "_RJEM_MALLOC_CONF", "NUM_OF_GPUS"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(daemon_mod, "_preload_wsl_nvidia_driver_libs", lambda: ())
+
+    _ensure_prover_env()
+
+    assert os.environ["RAYON_NUM_THREADS"] == str(os.cpu_count() or 1)
+    assert os.environ["_RJEM_MALLOC_CONF"] == "background_thread:true"
+    assert os.environ["NUM_OF_GPUS"] == "1"
 
 
 def test_build_production_node_wires_stratum_and_p2p():
