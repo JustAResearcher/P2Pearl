@@ -23,9 +23,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import struct
 import sys
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -39,7 +41,43 @@ from .consensus.subsidy import block_subsidy
 from .stratum import protocol as P
 from .stratum.server import StratumServer, Submission, SubmitResult
 
+_LOGGER = logging.getLogger(__name__)
+
 _PRELOADED_PROVER_LIBS: tuple[str, ...] = ()
+
+
+def _submit_timing_threshold_ms() -> float:
+    try:
+        return float(os.environ.get("P2PEARL_SUBMIT_TIMING_MS", "75"))
+    except ValueError:
+        return 75.0
+
+
+def _trace_all_submits() -> bool:
+    return os.environ.get("P2PEARL_TRACE_SUBMIT", "").lower() in {"1", "true", "yes", "on"}
+
+
+def _emit_submit_timing(
+    submission: Submission,
+    accepted: bool,
+    reason: str | None,
+    started_at: float,
+    phases: list[tuple[str, float]],
+) -> None:
+    total_ms = (time.perf_counter() - started_at) * 1000.0
+    threshold_ms = _submit_timing_threshold_ms()
+    if not _trace_all_submits() and total_ms < threshold_ms:
+        return
+    payload = {
+        "job_id": submission.job.job_id,
+        "height": submission.job.height,
+        "worker": submission.worker_label,
+        "accepted": accepted,
+        "reason": reason,
+        "total_ms": round(total_ms, 3),
+        "phases_ms": {label: round(ms, 3) for label, ms in phases},
+    }
+    print("P2PEARL_SUBMIT_TIMING " + json.dumps(payload, separators=(",", ":")), flush=True)
 
 
 @dataclass
@@ -196,6 +234,9 @@ class PoolNode:
         self._make_header_from_share = make_header_from_share
         self._min_payout = min_payout_grains
         self._template: ParentTemplate | None = None
+        self._background_tasks: set[asyncio.Task] = set()
+        self._refresh_task: asyncio.Task | None = None
+        self._refresh_again = False
         # Block-assembly is the ZK prover — seconds of CPU on the critical find->submit
         # path. Serialize it (one prove at a time; concurrent proves only fight for the
         # same cores) and DEDUP per parent tip so a flood of block-clearing shares can't
@@ -204,6 +245,41 @@ class PoolNode:
         self._assembled_parents: set[bytes] = set()
         if stratum is not None:
             stratum.set_job_builder(self.build_job_for)
+
+    def _spawn_background(self, label: str, coro) -> asyncio.Task:
+        """Run non-consensus follow-up work without delaying miner submit ACKs."""
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+
+        def _done(t: asyncio.Task) -> None:
+            self._background_tasks.discard(t)
+            try:
+                t.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                _LOGGER.exception("%s failed", label)
+
+        task.add_done_callback(_done)
+        return task
+
+    async def _run_stratum_refresh(self) -> None:
+        assert self.stratum is not None
+        try:
+            while True:
+                self._refresh_again = False
+                await self.stratum.refresh()
+                if not self._refresh_again:
+                    return
+        finally:
+            self._refresh_task = None
+
+    def _request_stratum_refresh(self) -> None:
+        if self.stratum is not None:
+            if self._refresh_task is not None and not self._refresh_task.done():
+                self._refresh_again = True
+                return
+            self._refresh_task = self._spawn_background("stratum refresh", self._run_stratum_refresh())
 
     def set_template(self, template: ParentTemplate) -> None:
         prev = self._template.prev_block if self._template is not None else None
@@ -271,41 +347,65 @@ class PoolNode:
 
     # --- submit handling (the stratum submit_handler) ----------------------- #
     async def handle_submit(self, submission: Submission) -> SubmitResult:
+        started_at = time.perf_counter()
+        last_mark = started_at
+        phases: list[tuple[str, float]] = []
+
+        def mark(label: str) -> None:
+            nonlocal last_mark
+            now = time.perf_counter()
+            phases.append((label, (now - last_mark) * 1000.0))
+            last_mark = now
+
+        def finish(accepted: bool, code: int | None = None, message: str | None = None) -> SubmitResult:
+            _emit_submit_timing(submission, accepted, message, started_at, phases)
+            return SubmitResult(accepted, code, message)
+
         ctx = submission.job.context
         if not isinstance(ctx, _JobContext):
-            return SubmitResult(False, P.INVALID_PARAMS_CODE, "job has no candidate share")
+            mark("prepare")
+            return finish(False, P.INVALID_PARAMS_CODE, "job has no candidate share")
         header_bytes = bytes.fromhex(submission.job.incomplete_header_hex)
         share_nbits = target_to_bits(submission.job.share_target)
+        mark("prepare")
 
         # 1. Cheap share-target verification (nbits override).
         if not self._verify_share(
             header_bytes, submission.plain_proof_b64, share_nbits, ctx.cert_version,
         ):
-            return SubmitResult(False, P.LOW_DIFF_CODE, "share does not meet target")
+            mark("verify_share")
+            return finish(False, P.LOW_DIFF_CODE, "share does not meet target")
+        mark("verify_share")
 
         # 2. Record the share on the sidechain (PoW already verified above).
         proof_bytes = submission.plain_proof_b64.encode("ascii")
         added = self.sharechain.add_share(ctx.candidate, verified=True, proof=proof_bytes)
+        mark("sharechain_add")
         if not added.accepted:
             if added.reason == "duplicate" and ctx.candidate.share_id() in self.sharechain:
-                return SubmitResult(True)
-            return SubmitResult(False, P.STALE_SHARE_CODE, added.reason or "share rejected")
+                return finish(True, message="duplicate")
+            return finish(False, P.STALE_SHARE_CODE, added.reason or "share rejected")
 
         # 3. Gossip the share to peers.
         if self._broadcast_share is not None:
             await self._broadcast_share(ctx.candidate, submission.plain_proof_b64)
+        mark("broadcast_share")
 
         self.emit_payout_stats()
+        mark("payout_stats")
 
         # 4. Block-found path: confirm at the BLOCK target with the UNMODIFIED verifier,
         #    then assemble (ZK-prove) the full Pearl block, submit it, and gossip it.
-        if self._verify_block(header_bytes, submission.plain_proof_b64, ctx.cert_version):
+        is_block = self._verify_block(header_bytes, submission.plain_proof_b64, ctx.cert_version)
+        mark("verify_block")
+        if is_block:
             await self._assemble_and_submit(ctx, submission.plain_proof_b64)
+            mark("assemble_submit_block")
 
         # 5. New sidechain tip -> rebuild every miner's job (new prev_share + PPLNS).
-        if self.stratum is not None:
-            await self.stratum.refresh()
-        return SubmitResult(True)
+        self._request_stratum_refresh()
+        mark("schedule_refresh")
+        return finish(True)
 
     async def _assemble_and_submit(self, ctx: _JobContext, plain_proof_b64: str) -> None:
         """ZK-prove + submit the found Pearl block — the orphan-critical step.
@@ -373,15 +473,28 @@ class PoolNode:
         """Poll ``node`` for new parent tips and refresh jobs. Tests drive
         ``set_template`` / ``handle_submit`` directly instead of running this."""
         last_prev: bytes | None = None
+        rpc_failures = 0
         while True:
-            result = node.get_block_template()
-            gbt = await result if asyncio.iscoroutine(result) else result
-            template = ParentTemplate.from_gbt(gbt)
+            try:
+                result = node.get_block_template()
+                gbt = await result if asyncio.iscoroutine(result) else result
+                template = ParentTemplate.from_gbt(gbt)
+            except Exception as exc:
+                rpc_failures += 1
+                if rpc_failures == 1 or rpc_failures % 30 == 0:
+                    print(
+                        f"  parent RPC unavailable ({exc}); keeping miners connected and retrying",
+                        flush=True,
+                    )
+                await asyncio.sleep(poll_interval)
+                continue
+            if rpc_failures:
+                print("  parent RPC recovered; refreshing miner jobs", flush=True)
+                rpc_failures = 0
             if template.prev_block != last_prev:
                 last_prev = template.prev_block
                 self.set_template(template)
-                if self.stratum is not None:
-                    await self.stratum.refresh()
+                self._request_stratum_refresh()
             await asyncio.sleep(poll_interval)
 
 
@@ -685,7 +798,7 @@ def build_production_node(cfg: config.DaemonConfig | None = None, share_target: 
     # it is added or relayed -> a peer can forge neither the PoW nor the PPLNS split.
     async def _on_new_share(_share):
         pool.emit_payout_stats()
-        await stratum.refresh()                # a peer's share advanced the tip -> new jobs
+        pool._request_stratum_refresh()        # a peer's share advanced the tip -> new jobs
 
     def _cert_version_for_share(share: ShareBlock) -> int:
         template = pool._template

@@ -8,6 +8,7 @@ prove per-miner jobs and the full submit -> verify -> sharechain -> gossip path.
 
 import asyncio
 import base64
+from contextlib import suppress
 import json
 import os
 import struct
@@ -51,6 +52,35 @@ class _Rec:
 
     async def __call__(self, *args):
         self.calls.append(args)
+
+
+class _SlowStratum:
+    def __init__(self):
+        self.called = asyncio.Event()
+        self.release = asyncio.Event()
+        self.count = 0
+        self._job_builder = None
+
+    def set_job_builder(self, builder):
+        self._job_builder = builder
+
+    async def refresh(self):
+        self.count += 1
+        self.called.set()
+        await self.release.wait()
+
+
+class _RefreshRecorder:
+    def __init__(self):
+        self.called = asyncio.Event()
+        self.count = 0
+
+    def set_job_builder(self, builder):
+        self._job_builder = builder
+
+    async def refresh(self):
+        self.count += 1
+        self.called.set()
 
 
 async def _noop(*args):
@@ -119,6 +149,42 @@ def test_ensure_prover_env_sets_cuda_defaults(monkeypatch):
     assert os.environ["NUM_OF_GPUS"] == "1"
 
 
+def test_run_survives_transient_template_rpc_failure():
+    asyncio.run(_run_survives_transient_template_rpc_failure())
+
+
+async def _run_survives_transient_template_rpc_failure():
+    class FlakyRPC:
+        def __init__(self):
+            self.calls = 0
+
+        def get_block_template(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("temporary RPC refusal")
+            return {
+                "height": 1000,
+                "previousblockhash": "22" * 32,
+                "bits": "1e01ffff",
+                "curtime": 123,
+                "coinbasevalue": 5_000_000_000,
+            }
+
+    stratum = _RefreshRecorder()
+    node = _node(Sharechain(window=10), stratum=stratum)
+    rpc = FlakyRPC()
+    task = asyncio.create_task(node.run(rpc, poll_interval=0.01))
+    try:
+        await asyncio.wait_for(stratum.called.wait(), timeout=1.0)
+        assert rpc.calls >= 2
+        assert node._template is not None
+        assert stratum.count == 1
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+
 def test_build_production_node_wires_stratum_and_p2p():
     # `p2pearl daemon` must serve miners AND gossip to peers: build_production_node wires
     # a StratumServer (job source = build_job_for) + a P2PNode (broadcast hooks). No
@@ -181,6 +247,59 @@ def test_payout_estimate_snapshot_after_shares():
 
 def test_handle_submit_accepts_share():
     asyncio.run(_share_flow())
+
+
+def test_handle_submit_ack_not_blocked_by_stratum_refresh():
+    asyncio.run(_submit_ack_not_blocked_by_refresh())
+
+
+def test_stratum_refresh_requests_are_coalesced():
+    asyncio.run(_stratum_refresh_requests_are_coalesced())
+
+
+async def _submit_ack_not_blocked_by_refresh():
+    sc = Sharechain(window=10)
+    stratum = _SlowStratum()
+    node = _node(sc, verify_block=False, stratum=stratum)
+    node.set_template(TEMPLATE)
+    header_hex, target, height, ctx = node.build_job_for(ADDR_A)
+    job = StratumJob("00001000-ack", header_hex, target, height, ctx)
+
+    res = await asyncio.wait_for(
+        node.handle_submit(Submission(ADDR_A, "rigA", job, PROOF_B64)),
+        timeout=0.2,
+    )
+
+    assert res.accepted
+    await asyncio.wait_for(stratum.called.wait(), timeout=0.2)
+    stratum.release.set()
+    if node._background_tasks:
+        await asyncio.gather(*list(node._background_tasks))
+
+
+async def _stratum_refresh_requests_are_coalesced():
+    sc = Sharechain(window=10)
+    stratum = _SlowStratum()
+    node = _node(sc, verify_block=False, stratum=stratum)
+    node.set_template(TEMPLATE)
+
+    header_hex, target, height, ctx = node.build_job_for(ADDR_A)
+    first = await node.handle_submit(
+        Submission(ADDR_A, "rigA", StratumJob("00001000-a", header_hex, target, height, ctx), PROOF_B64))
+    assert first.accepted
+    await asyncio.wait_for(stratum.called.wait(), timeout=0.2)
+    assert stratum.count == 1
+
+    header_hex, target, height, ctx = node.build_job_for(ADDR_B)
+    second = await node.handle_submit(
+        Submission(ADDR_B, "rigB", StratumJob("00001000-b", header_hex, target, height, ctx), PROOF_B64))
+    assert second.accepted
+    assert stratum.count == 1
+
+    stratum.release.set()
+    if node._background_tasks:
+        await asyncio.wait_for(asyncio.gather(*list(node._background_tasks)), timeout=0.2)
+    assert stratum.count == 2
 
 
 async def _share_flow():

@@ -24,7 +24,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
+import os
+import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -32,6 +35,44 @@ from dataclasses import dataclass
 from . import protocol as P
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _submit_timing_threshold_ms() -> float:
+    try:
+        return float(os.environ.get("P2PEARL_SUBMIT_TIMING_MS", "75"))
+    except ValueError:
+        return 75.0
+
+
+def _trace_all_submits() -> bool:
+    return os.environ.get("P2PEARL_TRACE_SUBMIT", "").lower() in {"1", "true", "yes", "on"}
+
+
+def _emit_submit_timing(
+    conn: "_Connection",
+    req_id: object,
+    job_id: str | None,
+    accepted: bool,
+    reason: str | None,
+    started_at: float,
+    phases: list[tuple[str, float]],
+) -> None:
+    total_ms = (time.perf_counter() - started_at) * 1000.0
+    threshold_ms = _submit_timing_threshold_ms()
+    if not _trace_all_submits() and total_ms < threshold_ms:
+        return
+    payload = {
+        "conn_id": conn.conn_id,
+        "peer": str(conn.writer.get_extra_info("peername")),
+        "request_id": req_id,
+        "job_id": job_id,
+        "worker": conn.worker_label,
+        "accepted": accepted,
+        "reason": reason,
+        "total_ms": round(total_ms, 3),
+        "phases_ms": {label: round(ms, 3) for label, ms in phases},
+    }
+    print("P2PEARL_STRATUM_TIMING " + json.dumps(payload, separators=(",", ":")), flush=True)
 
 # A ``mining.submit`` frame carries a 137-368 KB base64 plain_proof on ONE line;
 # asyncio's default 64 KiB readline limit would raise LimitOverrunError on the first
@@ -220,28 +261,53 @@ class _Connection:
         await self.push_job(clean=True)
 
     async def _handle_submit(self, req: "P.Request") -> None:
+        started_at = time.perf_counter()
+        last_mark = started_at
+        phases: list[tuple[str, float]] = []
+        job_id: str | None = None
+
+        def mark(label: str) -> None:
+            nonlocal last_mark
+            now = time.perf_counter()
+            phases.append((label, (now - last_mark) * 1000.0))
+            last_mark = now
+
+        async def finish(frame: bytes, accepted: bool, reason: str | None) -> None:
+            await self.send(frame)
+            mark("send_response")
+            _emit_submit_timing(self, req.id, job_id, accepted, reason, started_at, phases)
+
         try:
             job_id, proof_b64 = P.parse_submit(req.params)
         except Exception as exc:
-            await self.send(P.encode_error(req.id, P.INVALID_PARAMS_CODE, str(exc)))
+            mark("parse_submit")
+            await finish(P.encode_error(req.id, P.INVALID_PARAMS_CODE, str(exc)), False, str(exc))
             return
+        mark("parse_submit")
         job = self.server.registry.get(job_id)
         if job is None:
-            await self.send(P.encode_error(req.id, P.STALE_SHARE_CODE, "Job not found"))
+            mark("lookup_job")
+            await finish(P.encode_error(req.id, P.STALE_SHARE_CODE, "Job not found"), False, "Job not found")
             return
+        mark("lookup_job")
         try:
             base64.b64decode(proof_b64, validate=True)
         except Exception as exc:
-            await self.send(P.encode_error(req.id, P.INVALID_PARAMS_CODE, f"bad plain_proof: {exc}"))
+            mark("base64_decode")
+            reason = f"bad plain_proof: {exc}"
+            await finish(P.encode_error(req.id, P.INVALID_PARAMS_CODE, reason), False, reason)
             return
+        mark("base64_decode")
         submission = Submission(self.worker_address, self.worker_label, job, proof_b64)
         result = await self.server._on_submit(submission)
+        mark("submit_handler")
         if result.accepted:
-            await self.send(P.encode_response(req.id, True))
+            await finish(P.encode_response(req.id, True), True, None)
         else:
-            await self.send(P.encode_error(
+            reason = result.error_message or "rejected"
+            await finish(P.encode_error(
                 req.id, result.error_code or P.LOW_DIFF_CODE,
-                result.error_message or "rejected"))
+                reason), False, reason)
 
     async def push_job(self, clean: bool) -> None:
         if not self.ready:
