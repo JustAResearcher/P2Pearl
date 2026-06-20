@@ -44,7 +44,9 @@ MAX_TIMESTAMP_DRIFT_SECONDS = 300        # reject shares stamped further than th
 # Runtime vardiff policy. This is not consensus: a node may ask its directly
 # connected miners for shares harder than the current sidechain target limit.
 # v5 shares carry both values, so peers credit the extra work correctly.
-STRATUM_TARGET_FACTOR = 16
+STRATUM_TARGET_FACTOR = 256              # initial factor; adaptive vardiff tunes per worker
+STRATUM_VARDIFF_TARGET_SECONDS = 60
+STRATUM_VARDIFF_MAX_FACTOR = 1 << 24
 
 
 @dataclass(frozen=True)

@@ -385,7 +385,7 @@ class StratumServer:
         self._conns: set[_Connection] = set()
         self._server: asyncio.AbstractServer | None = None
         self._conn_seq = 0
-        self._job_builder: Callable[[str | None], tuple | None] | None = None
+        self._job_builder: Callable[[str | None, str], tuple | None] | None = None
 
     async def start(self) -> None:
         self._server = await asyncio.start_server(
@@ -408,10 +408,10 @@ class StratumServer:
             self._server.close()
             await self._server.wait_closed()
 
-    def set_job_builder(self, builder: "Callable[[str | None], tuple | None]") -> None:
+    def set_job_builder(self, builder: "Callable[[str | None, str], tuple | None]") -> None:
         """Register a per-connection job source for P2Pool-style per-miner coinbases.
 
-        ``builder(worker_address) -> (incomplete_header_hex, share_target, height, context)``
+        ``builder(worker_address, worker_label) -> (incomplete_header_hex, share_target, height, context)``
         or ``None``. With a builder set, each miner gets its OWN job — its coinbase pays the
         PPLNS window and commits a share crediting that miner — so call ``refresh()`` on a tip
         change rather than ``update_job()``.
@@ -420,7 +420,7 @@ class StratumServer:
 
     def _mint_job_for(self, conn: "_Connection") -> "StratumJob | None":
         if self._job_builder is not None:
-            spec = self._job_builder(conn.worker_address)
+            spec = self._job_builder(conn.worker_address, conn.worker_label)
             return None if spec is None else self.registry.mint(*spec)
         return self.registry.latest()
 

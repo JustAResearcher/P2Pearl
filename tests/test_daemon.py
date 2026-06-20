@@ -182,6 +182,39 @@ def test_build_job_for_applies_stratum_target_factor():
     assert ctx.candidate.target_limit == SHARE_TARGET
 
 
+def test_vardiff_hardens_fast_worker(monkeypatch):
+    sc = Sharechain(window=10, bootstrap_target=SHARE_TARGET)
+    node = _node(sc, stratum_target_factor=8)
+    clock = {"now": 1_000.0}
+    monkeypatch.setattr(daemon_mod.time, "monotonic", lambda: clock["now"])
+    sub = Submission(ADDR_A, "rigA", StratumJob("j", "00" * 76, SHARE_TARGET, 0), PROOF_B64)
+
+    assert not node._record_vardiff_share(sub)
+    clock["now"] += 10
+    assert node._record_vardiff_share(sub)
+    assert node._worker_target_factor(ADDR_A, "rigA") == 16
+    assert node._worker_target_factor(ADDR_A, "rigB") == 8
+
+    node.set_template(TEMPLATE)
+    _header_hex, target_a, _height, ctx_a = node.build_job_for(ADDR_A, "rigA")
+    _header_hex, target_b, _height, ctx_b = node.build_job_for(ADDR_A, "rigB")
+    assert target_a == SHARE_TARGET // 16
+    assert target_b == SHARE_TARGET // 8
+    assert ctx_a.candidate.target_limit == ctx_b.candidate.target_limit == SHARE_TARGET
+
+
+def test_vardiff_eases_slow_worker(monkeypatch):
+    node = _node(Sharechain(window=10, bootstrap_target=SHARE_TARGET), stratum_target_factor=8)
+    clock = {"now": 1_000.0}
+    monkeypatch.setattr(daemon_mod.time, "monotonic", lambda: clock["now"])
+    sub = Submission(ADDR_A, "rigA", StratumJob("j", "00" * 76, SHARE_TARGET, 0), PROOF_B64)
+
+    node._record_vardiff_share(sub)
+    clock["now"] += 180
+    assert node._record_vardiff_share(sub)
+    assert node._worker_target_factor(ADDR_A, "rigA") == 4
+
+
 def test_jobs_use_live_monotonic_timestamps_for_retarget(monkeypatch):
     asyncio.run(_jobs_use_live_monotonic_timestamps_for_retarget(monkeypatch))
 

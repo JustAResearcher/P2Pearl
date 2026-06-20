@@ -4,7 +4,7 @@
 
 P2Pearl is a mining pool with **no company behind it**: no operator, no account, no signup, and a **0 % fee**. When the pool finds a block, the block itself pays every recent miner their share, straight to their own wallet. There is nobody to take a cut, run off with funds, or get shut down — the same idea as Monero's P2Pool, built for Pearl.
 
-[![release](https://img.shields.io/github/v/release/JustAResearcher/P2Pearl)](https://github.com/JustAResearcher/P2Pearl/releases/latest) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE) ![tests](https://img.shields.io/badge/tests-143%20passing-brightgreen)
+[![release](https://img.shields.io/github/v/release/JustAResearcher/P2Pearl)](https://github.com/JustAResearcher/P2Pearl/releases/latest) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE) ![tests](https://img.shields.io/badge/tests-146%20passing-brightgreen)
 
 <p align="center"><img src="docs/img/gui.png" alt="The P2Pearl control panel" width="640"></p>
 
@@ -91,7 +91,7 @@ For the daemon itself there is **no config file** — it is configured entirely 
 | `--rpc-pass` | `pass` | `pearld` RPC password (must match `--rpcpass`). Prefer the env var below. |
 | `--stratum-host` | `0.0.0.0` | Bind address for the miner-facing stratum listener. Use `127.0.0.1` to accept only local miners. |
 | `--stratum-port` | `3360` | The port miners point `--pool` at. |
-| `--stratum-target-factor` | `16` | Vardiff factor for directly connected miners. `16` asks for shares 16x harder than the sidechain target limit, so miners submit fewer large proof frames; v5 peers credit the harder share difficulty correctly. Use `1` to disable. |
+| `--stratum-target-factor` | `256` | Initial adaptive vardiff factor for directly connected miners. P2Pearl auto-hardens fast workers and eases slow workers toward ~1 submit/minute; v5 peers credit harder share difficulty correctly. Use `1` to disable adaptive vardiff. |
 | `--p2p-host` | `0.0.0.0` | Bind address for the share-gossip listener. |
 | `--p2p-port` | `37900` | The port other operators `--peer` to. |
 | `--peer HOST:PORT` | *(none)* | Another operator's P2P endpoint. **Repeatable.** With no peers you run a solo pool (still feeless, still PPLNS across your own miners). Peering merges everyone into ONE pool: shares gossip both ways, every node trustlessly re-verifies them, and any node's block pays the whole network's window. New nodes window-sync the recent sharechain automatically on connect. |
@@ -251,7 +251,7 @@ src/p2pearl/
   p2p/node.py            gossip: announce/on-demand proof fetch, relay, window sync
   gui.py                 the tkinter control panel (settings + start/stop + live log)
   daemon.py              PoolNode orchestrator: per-miner jobs, verify, block path
-tests/                   unit tests (143 passing)
+tests/                   unit tests (146 passing)
 docs/                    blueprint + running-a-node guide
 tools/apply_m2_binding.py  one-step additive patch for a stock Pearl checkout
 integration/             cross-repo notes (py-pearl-mining binding, stratum dialect)

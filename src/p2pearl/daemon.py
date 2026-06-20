@@ -9,7 +9,7 @@ unit-tested with fakes (no pearld / pearl_mining / bitcoinutils needed);
 Per-miner jobs: each share's coinbase pays the PPLNS window AND commits a share
 crediting the finder, so every miner needs its OWN job (its own coinbase -> its own
 merkle root -> its own header). The stratum server's ``set_job_builder`` hook calls
-``PoolNode.build_job_for(worker_address)`` per connection.
+``PoolNode.build_job_for(worker_address, worker_label)`` per connection.
 
 Flow:
   build_job_for(addr): sidechain tip -> PPLNS payouts -> coinbase(payouts +
@@ -225,6 +225,13 @@ class _JobContext:
     cert_version: int
 
 
+@dataclass
+class _VardiffState:
+    factor: int
+    last_share_at: float | None = None
+    ewma_interval: float | None = None
+
+
 class PoolNode:
     def __init__(
         self,
@@ -258,6 +265,10 @@ class PoolNode:
         self._make_header_from_share = make_header_from_share
         self._min_payout = min_payout_grains
         self._stratum_target_factor = max(1, int(stratum_target_factor))
+        self._vardiff_enabled = self._stratum_target_factor > 1
+        self._vardiff_target_seconds = max(1, int(config.STRATUM_VARDIFF_TARGET_SECONDS))
+        self._vardiff_max_factor = max(self._stratum_target_factor, int(config.STRATUM_VARDIFF_MAX_FACTOR))
+        self._vardiff: dict[tuple[str, str], _VardiffState] = {}
         self._template: ParentTemplate | None = None
         self._background_tasks: set[asyncio.Task] = set()
         self._pending_shares: set[bytes] = set()
@@ -372,7 +383,8 @@ class PoolNode:
                 finish(False, added.reason or "share rejected")
                 return
 
-            if added.is_best_tip:
+            vardiff_changed = self._record_vardiff_share(submission)
+            if added.is_best_tip or vardiff_changed:
                 self._request_stratum_refresh()
 
             if self._broadcast_share is not None:
@@ -404,8 +416,67 @@ class PoolNode:
         print(format_payout_estimate(snapshot), flush=True)
         print(config.PAYOUT_STATS_PREFIX + json.dumps(snapshot, separators=(",", ":")), flush=True)
 
+    def _worker_key(self, worker_address: str | None, worker_label: str | None) -> tuple[str, str] | None:
+        if not worker_address:
+            return None
+        return (worker_address, worker_label or "default")
+
+    def _vardiff_state_for(self, worker_address: str | None, worker_label: str | None) -> _VardiffState:
+        key = self._worker_key(worker_address, worker_label)
+        if key is None:
+            return _VardiffState(self._stratum_target_factor)
+        state = self._vardiff.get(key)
+        if state is None:
+            state = _VardiffState(self._stratum_target_factor)
+            self._vardiff[key] = state
+        return state
+
+    def _worker_target_factor(self, worker_address: str | None, worker_label: str | None = None) -> int:
+        if not self._vardiff_enabled:
+            return self._stratum_target_factor
+        return self._vardiff_state_for(worker_address, worker_label).factor
+
+    def _record_vardiff_share(self, submission: Submission) -> bool:
+        if not self._vardiff_enabled:
+            return False
+        key = self._worker_key(submission.worker_address, submission.worker_label)
+        if key is None:
+            return False
+        state = self._vardiff_state_for(*key)
+        now = time.monotonic()
+        if state.last_share_at is None:
+            state.last_share_at = now
+            return False
+
+        interval = max(0.001, now - state.last_share_at)
+        state.last_share_at = now
+        if state.ewma_interval is None:
+            state.ewma_interval = interval
+        else:
+            state.ewma_interval = (state.ewma_interval * 0.7) + (interval * 0.3)
+
+        old_factor = state.factor
+        if state.ewma_interval < self._vardiff_target_seconds / 2:
+            state.factor = min(self._vardiff_max_factor, state.factor * 2)
+        elif state.ewma_interval > self._vardiff_target_seconds * 2:
+            state.factor = max(1, state.factor // 2)
+
+        if state.factor == old_factor:
+            return False
+        state.ewma_interval = None
+        payload = {
+            "worker": key[1],
+            "address": key[0],
+            "old_factor": old_factor,
+            "new_factor": state.factor,
+            "interval_seconds": round(interval, 3),
+            "target_seconds": self._vardiff_target_seconds,
+        }
+        print("P2PEARL_VARDIFF " + json.dumps(payload, separators=(",", ":")), flush=True)
+        return True
+
     # --- job building (called per-connection by the stratum) ---------------- #
-    def build_job_for(self, worker_address: str | None):
+    def build_job_for(self, worker_address: str | None, worker_label: str = "default"):
         """Build this miner's job: a candidate share + the header that commits it.
 
         Returns ``(incomplete_header_hex, share_target, height, _JobContext)`` for the
@@ -432,7 +503,7 @@ class PoolNode:
         if target_limit is None:
             target_limit = int(tip.target_limit)   # truncated local history right after a
                                                    # window sync — carry the tip's limit
-        share_target = max(1, target_limit // self._stratum_target_factor)
+        share_target = max(1, target_limit // self._worker_target_factor(worker_address, worker_label))
         coinbase_value = block_subsidy(template.height)
 
         weights = self.sharechain.pplns_weights()

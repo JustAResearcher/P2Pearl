@@ -460,7 +460,7 @@ def main() -> int:
     add_entry(adv_box, 0, 0, "Stratum bind", "stratum_host", hint="0.0.0.0 = all interfaces")
     add_entry(adv_box, 1, 0, "P2P bind", "p2p_host")
     add_entry(adv_box, 2, 0, "Target factor", "stratum_target_factor", width=8,
-              hint="higher = fewer, harder miner submits")
+              hint="starting vardiff; higher = fewer submits")
     add_entry(adv_box, 3, 0, "Genesis share target", "share_target",
               hint="consensus — leave empty unless bootstrapping a new sidechain")
     add_entry(adv_box, 4, 0, "Pause cmd (pre-prove)", "pause_cmd", width=34,

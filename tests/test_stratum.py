@@ -101,6 +101,24 @@ def test_job_derived_fields():
     assert pos[0] == "00000001-0001" and pos[2] == HEADER_HEX and pos[6] is True
 
 
+def test_job_builder_receives_worker_label():
+    server = StratumServer(_Recorder(SubmitResult(accepted=True)), host="127.0.0.1", port=0)
+    calls = []
+
+    def builder(address, label):
+        calls.append((address, label))
+        return (HEADER_HEX, SHARE_TARGET, 123, None)
+
+    class Conn:
+        worker_address = ADDR
+        worker_label = "rig0"
+
+    server.set_job_builder(builder)
+    job = server._mint_job_for(Conn())
+    assert job is not None and job.height == 123
+    assert calls == [(ADDR, "rig0")]
+
+
 def test_broadcast_does_not_block_on_slow_connection():
     asyncio.run(_broadcast_not_blocked_by_slow_connection())
 

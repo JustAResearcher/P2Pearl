@@ -55,8 +55,8 @@ def main(argv: list[str] | None = None) -> int:
     dp.add_argument("--stratum-host", default="0.0.0.0", help="stratum bind host (default 0.0.0.0)")
     dp.add_argument("--stratum-port", type=int, default=3360, help="stratum port (default 3360)")
     dp.add_argument("--stratum-target-factor", type=int, default=None,
-                    help="ask miners for shares this many times harder than the sidechain target "
-                         f"(default {config_defaults.STRATUM_TARGET_FACTOR}; 1 disables)")
+                    help="initial vardiff factor for miner shares "
+                         f"(default {config_defaults.STRATUM_TARGET_FACTOR}; 1 disables adaptive vardiff)")
     dp.add_argument("--p2p-host", default="0.0.0.0", help="P2P bind host (default 0.0.0.0)")
     dp.add_argument("--p2p-port", type=int, default=37900, help="P2P port (default 37900)")
     dp.add_argument("--peer", action="append", metavar="HOST:PORT",
